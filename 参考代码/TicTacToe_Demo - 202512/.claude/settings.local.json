@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"with open\\(r'c:\\\\Users\\\\90506\\\\Desktop\\\\【手册或资料】\\\\TicTacToe_Demo - 202512\\\\TicTacToe_Demo - 202512\\\\Core\\\\Src\\\\main.c', 'rb'\\) as f: raw = f.read\\(\\); print\\(raw[:200]\\)\")",
+      "Bash(python \"c:/Users/90506/Desktop/TicTacToe_check_encoding.py\")",
+      "Bash(cmd.exe /c \"python c:\\\\Users\\\\90506\\\\Desktop\\\\TicTacToe_convert.py\")",
+      "Read(//c/Users/90506/Desktop/**)",
+      "Bash(python TicTacToe_convert.py)",
+      "Bash(cmd.exe /c \"cd /d %TEMP% && python convert_gbk.py\")",
+      "Read(//c/Users/90506/AppData/Local/Temp/**)",
+      "Bash(python convert_gbk.py)",
+      "Bash(python \"c:\\\\Users\\\\90506\\\\AppData\\\\Local\\\\Temp\\\\convert_gbk.py\")",
+      "Bash(python \"c:\\\\Users\\\\90506\\\\Desktop\\\\【手册或资料】\\\\TicTacToe_Demo - 202512\\\\TicTacToe_Demo - 202512\\\\convert_encoding.py\")",
+      "Bash(python convert_encoding.py)",
+      "Bash(powershell.exe -Command \"Set-Location 'C:\\\\Users\\\\90506\\\\AppData\\\\Local\\\\Temp'; python convert_gbk.py\")",
+      "Bash(cmd.exe /c \"cd /d \\\\\"c:\\\\Users\\\\90506\\\\Desktop\\\\【手册或资料】\\\\TicTacToe_Demo - 202512\\\\TicTacToe_Demo - 202512\\\\\" && python convert_encoding.py\")",
+      "Bash(python \"C:/Users/90506/Desktop/【手册或资料】/TicTacToe_Demo - 202512/TicTacToe_Demo - 202512/convert_encoding.py\")",
+      "Bash(powershell.exe -Command ' *)",
+      "Bash(cd \"C:/Users/90506\" && python \"C:/Users/90506/Desktop/【手册或资料】/TicTacToe_Demo - 202512/TicTacToe_Demo - 202512/convert_encoding.py\")",
+      "Read(//c/Users/90506/**)",
+      "Bash(powershell.exe -Command \"python c:\\\\Users\\\\90506\\\\convert_encoding.py\")",
+      "Bash(python C:/Users/90506/convert_ttt.py)",
+      "Bash(python convert_ttt.py)"
+    ]
+  }
+}

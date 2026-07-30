@@ -1,0 +1,75 @@
+{
+  "a4_size_mm": [
+    210.0,
+    297.0
+  ],
+  "mode": "field-card",
+  "target_rect": {
+    "center_mm": [
+      105.0,
+      222.75
+    ],
+    "width_mm": 118.0469,
+    "height_mm": 78.8023
+  },
+  "quality": {
+    "geometry_score": 0.59455,
+    "texture_score": 0.156499
+  },
+  "pieces": [
+    {
+      "id": 1,
+      "source_center_mm": [
+        70.4834,
+        81.4657
+      ],
+      "pick_point_mm": [
+        65.2,
+        84.6
+      ],
+      "source_angle_deg": 21.2195,
+      "target_center_mm": [
+        129.3039,
+        219.0211
+      ],
+      "target_pick_point_mm": [
+        133.1215,
+        214.2082
+      ],
+      "target_angle_deg": -179.6819,
+      "translation_mm": [
+        58.8205,
+        137.5554
+      ],
+      "rotation_deg": 159.0986,
+      "sequence": 1
+    },
+    {
+      "id": 2,
+      "source_center_mm": [
+        141.6462,
+        90.483
+      ],
+      "pick_point_mm": [
+        136.4,
+        94.2
+      ],
+      "source_angle_deg": 162.0782,
+      "target_center_mm": [
+        72.6717,
+        227.41
+      ],
+      "target_pick_point_mm": [
+        74.5974,
+        233.5443
+      ],
+      "target_angle_deg": 89.9687,
+      "translation_mm": [
+        -68.9745,
+        136.927
+      ],
+      "rotation_deg": -72.1096,
+      "sequence": 2
+    }
+  ]
+}

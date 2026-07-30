@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+
+# 仿真输出
+output/
+
+# Captured camera data and machine-specific calibration/configuration
+data/raw/
+data/background/
+data/annotations/
+data/calibration/
+configs/local/
+*.npz
+
+# PyInstaller 构建产物
+build/
+package/
+dist/
+*.spec
+
+# 独立程序发布压缩包（通过 GitHub Release 发布）
+拼图视觉仿真_Linux_*.zip
+*Linux_x86_64.zip
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+MUJOCO_LOG.TXT
+.venv/

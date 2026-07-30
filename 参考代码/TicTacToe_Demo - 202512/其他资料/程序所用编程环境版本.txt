@@ -1,0 +1,10 @@
+通过网盘分享的文件：ARM KEIIL_V5.38.zip
+链接: https://pan.baidu.com/s/1MlquyXdu9dTyP1cpWpF5og?pwd=9999 提取码: 9999
+
+STM32CubeMX V6.13.0  请至  www.st.com  官网下载
+
+关于升级STM32CubeMX至6.13.0版本后，中文注释变成乱码的解决方法：
+https://www.bilibili.com/opus/1007473880252547077
+即在系统变量里面添加一个名称为JAVA_TOOL_OPTIONS，值为-Dfile.encoding=GBK变量
+以上所述环境变量是指windows中的新建一个环境变量，参考下文新建：
+https://blog.csdn.net/weixin_65032328/article/details/136580118

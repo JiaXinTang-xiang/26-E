@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="piper_l_arm">
+  <compiler angle="radian" meshdir="../model" autolimits="true" />
+  <option timestep="0.001" gravity="0 0 -9.81" integrator="implicitfast" />
+  <asset>
+    <mesh name="base_link" content_type="model/stl" file="base_link.STL" />
+    <mesh name="Link1" content_type="model/stl" file="Link1.STL" />
+    <mesh name="Link2" content_type="model/stl" file="Link2.STL" />
+    <mesh name="Link3" content_type="model/stl" file="Link3.STL" />
+    <mesh name="Link4" content_type="model/stl" file="Link4.STL" />
+    <mesh name="Link5" content_type="model/stl" file="Link5.STL" />
+    <mesh name="Link6" content_type="model/stl" file="Link6.STL" />
+    <texture name="texplane" type="2d" builtin="checker" rgb1=".0 .0 .0" rgb2=".8 .8 .8" width="100" height="100" />
+    <material name="matplane" reflectance="0." texture="texplane" texrepeat="1 1" texuniform="true" />
+  </asset>
+  <worldbody>
+    <geom type="mesh" rgba="1 1 1 1" mesh="base_link" />
+    <body name="link1" pos="0 0 0.123">
+      <inertial pos="0.000817079 0.00114473 -0.00814265" quat="0.495374 0.512103 0.499337 0.492968" mass="0.104657" diaginertia="5.78642e-05 4.75882e-05 3.99612e-05" />
+      <joint name="joint1" pos="0 0 0" axis="0 0 1" range="-2.618 2.618" actuatorfrcrange="-100 100" />
+      <geom type="mesh" rgba="1 1 1 1" mesh="Link1" />
+      <body name="link2" quat="-0.0616195 0.0616141 0.704419 0.704416">
+        <inertial pos="0.214411 -0.0136808 0.00265923" quat="0.00745934 0.706372 -0.0284858 0.707228" mass="0.28983" diaginertia="0.00188784 0.00182852 0.000155286" />
+        <joint name="joint2" pos="0 0 0" axis="0 0 1" range="0 3.14" actuatorfrcrange="-100 100" />
+        <geom type="mesh" rgba="1 1 1 1" mesh="Link2" />
+        <body name="link3" pos="0.33823 0 0" quat="0.608799 0 0 -0.793324">
+          <inertial pos="-0.00911397 -0.149792 -0.00059151" quat="0.501461 0.513526 -0.484301 0.500281" mass="0.144963" diaginertia="0.000297749 0.000284174 4.86244e-05" />
+          <joint name="joint3" pos="0 0 0" axis="0 0 1" range="-2.697 0" actuatorfrcrange="-100 100" />
+          <geom type="mesh" rgba="1 1 1 1" mesh="Link3" />
+          <body name="link4" pos="0 -0.3215 0" quat="0.704964 0.704966 0.0549928 0.0549926">
+            <inertial pos="0.00106539 0.0047699 -0.0099581" quat="0.544358 0.45032 0.444195 0.550978" mass="0.0630365" diaginertia="2.79351e-05 1.86061e-05 1.67622e-05" />
+            <joint name="joint4" pos="0 0 0" axis="0 0 1" range="-1.832 1.832" actuatorfrcrange="-100 100" />
+            <geom type="mesh" rgba="1 1 1 1" mesh="Link4" />
+            <body name="link5" quat="0.706432 -0.706435 -0.0308455 -0.0308456">
+              <inertial pos="-5.62619e-05 -0.045323 -0.00689048" quat="0.492109 0.506305 0.491765 0.509559" mass="0.0691" diaginertia="2.97722e-05 2.43018e-05 1.94243e-05" />
+              <joint name="joint5" pos="0 0 0" axis="0 0 -1" range="-1.22 1.22" actuatorfrcrange="-100 100" />
+              <geom type="mesh" rgba="1 1 1 1" mesh="Link5" />
+              <body name="link6" pos="0 -0.091 0" quat="0.707105 0.707108 0 0">
+                <inertial pos="0 -3.47851e-06 -0.00315808" quat="0.5 0.5 -0.5 0.5" mass="0.00563228" diaginertia="9.81761e-07 5.1306e-07 5.1306e-07" />
+                <joint name="joint6" pos="0 0 0" axis="0 0 1" range="-3.14 3.14" actuatorfrcrange="-100 100" />
+                <geom type="mesh" rgba="1 1 1 1" mesh="Link6" />
+                <site name="ee" pos="0 0 0" quat="1 0 0 0" size="0.01" rgba="1 0.2 0.2 1" />
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+    <geom name="ground" type="plane" pos="0 0 0" size="0 0 1" material="matplane" condim="3" />
+    <light directional="true" diffuse="0.5 0.5 0.5" pos="0 0 3" dir="0 0 -1" />
+    <camera name="fixed" pos="0.8 -0.8 0.5" xyaxes="1 0 0 0 0 1" />
+  </worldbody>
+  <default>
+    <joint damping="0.4" armature="0.01" />
+  </default>
+  <actuator>
+    <position name="joint1" joint="joint1" kp="100" kv="20" ctrllimited="true" ctrlrange="-2.618 2.618" />
+    <position name="joint2" joint="joint2" kp="100" kv="20" ctrllimited="true" ctrlrange="0 3.14" />
+    <position name="joint3" joint="joint3" kp="100" kv="20" ctrllimited="true" ctrlrange="-2.697 0" />
+    <position name="joint4" joint="joint4" kp="100" kv="20" ctrllimited="true" ctrlrange="-1.832 1.832" />
+    <position name="joint5" joint="joint5" kp="100" kv="20" ctrllimited="true" ctrlrange="-1.22 1.22" />
+    <position name="joint6" joint="joint6" kp="100" kv="20" ctrllimited="true" ctrlrange="-3.14 3.14" />
+  </actuator>
+</mujoco>

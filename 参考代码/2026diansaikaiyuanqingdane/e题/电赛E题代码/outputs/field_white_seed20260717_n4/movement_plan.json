@@ -1,0 +1,129 @@
+{
+  "a4_size_mm": [
+    210.0,
+    297.0
+  ],
+  "mode": "field-white",
+  "target_rect": {
+    "center_mm": [
+      105.0,
+      222.75
+    ],
+    "width_mm": 92.7779,
+    "height_mm": 67.6447
+  },
+  "quality": {
+    "geometry_score": 0.444792,
+    "texture_score": 0.0
+  },
+  "pieces": [
+    {
+      "id": 1,
+      "source_center_mm": [
+        50.2899,
+        27.1276
+      ],
+      "pick_point_mm": [
+        48.8,
+        28.0
+      ],
+      "source_angle_deg": 144.6076,
+      "target_center_mm": [
+        75.8423,
+        208.5486
+      ],
+      "target_pick_point_mm": [
+        74.1183,
+        208.4558
+      ],
+      "target_angle_deg": 178.0416,
+      "translation_mm": [
+        25.5525,
+        181.4211
+      ],
+      "rotation_deg": 33.434,
+      "sequence": 1
+    },
+    {
+      "id": 2,
+      "source_center_mm": [
+        146.1919,
+        71.3445
+      ],
+      "pick_point_mm": [
+        144.4,
+        63.6
+      ],
+      "source_angle_deg": 93.5061,
+      "target_center_mm": [
+        119.254,
+        202.9283
+      ],
+      "target_pick_point_mm": [
+        111.6214,
+        205.1491
+      ],
+      "target_angle_deg": 0.3102,
+      "translation_mm": [
+        -26.9379,
+        131.5837
+      ],
+      "rotation_deg": -93.1959,
+      "sequence": 2
+    },
+    {
+      "id": 3,
+      "source_center_mm": [
+        57.4984,
+        86.2617
+      ],
+      "pick_point_mm": [
+        53.2,
+        92.6
+      ],
+      "source_angle_deg": 132.6881,
+      "target_center_mm": [
+        86.3845,
+        241.0097
+      ],
+      "target_pick_point_mm": [
+        93.9576,
+        239.8703
+      ],
+      "target_angle_deg": -0.0111,
+      "translation_mm": [
+        28.8861,
+        154.748
+      ],
+      "rotation_deg": -132.6992,
+      "sequence": 3
+    },
+    {
+      "id": 4,
+      "source_center_mm": [
+        102.168,
+        110.1445
+      ],
+      "pick_point_mm": [
+        102.8,
+        109.8
+      ],
+      "source_angle_deg": 57.5764,
+      "target_center_mm": [
+        132.3845,
+        235.6103
+      ],
+      "target_pick_point_mm": [
+        132.4804,
+        236.3237
+      ],
+      "target_angle_deg": 168.5222,
+      "translation_mm": [
+        30.2165,
+        125.4658
+      ],
+      "rotation_deg": 110.9458,
+      "sequence": 4
+    }
+  ]
+}
