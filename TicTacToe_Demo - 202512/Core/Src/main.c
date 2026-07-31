@@ -53,20 +53,20 @@ extern KEY_STATE KeyStateBefore;//按键之前的历史状态，长按或短按�
 extern MENU_NAME MenuName;//当前的菜单选项
 extern PRESS_KEY PressTheKeyAction;
 
-extern uint16_t PulseNumOfStepMotorX;
-extern uint16_t PulseNumOfStepMotorY;//步进电机运动的脉冲数
-extern uint16_t PulseNumOfStepMotorZ;
-extern uint8_t FlagDirOfStepMotorX;//步进电机方向
-extern uint8_t FlagDirOfStepMotorY;
-extern uint8_t FlagDirOfStepMotorZ;
-extern uint16_t PosX;//步进电机位置
-extern uint16_t PosY;
-extern uint16_t PosZ;//步进电机当前位置
-extern uint8_t FlagMotorZReset;//Z轴复位标志
+extern volatile uint16_t PulseNumOfStepMotorX;
+extern volatile uint16_t PulseNumOfStepMotorY;//步进电机运动的脉冲数
+extern volatile uint16_t PulseNumOfStepMotorZ;
+extern volatile uint8_t FlagDirOfStepMotorX;//步进电机方向
+extern volatile uint8_t FlagDirOfStepMotorY;
+extern volatile uint8_t FlagDirOfStepMotorZ;
+extern volatile uint16_t PosX;//步进电机位置
+extern volatile uint16_t PosY;
+extern volatile uint16_t PosZ;//步进电机当前位置
+extern volatile uint8_t FlagMotorZReset;//Z轴复位标志
 extern uint8_t FlagLEDn;//为41时表示LED正在被操作，为40时表示LED空闲操作
-extern uint8_t FlagReset ;//复位标志
+extern volatile uint8_t FlagReset ;//复位标志
 extern uint8_t FlagMotorHomeing;
-extern uint8_t UART1_Rx_flg;//串口接收数据的中断标志
+extern volatile uint8_t UART1_Rx_flg;//串口接收数据的中断标志
 extern uint16_t PosBuf0[3];//取棋子的电源位置坐标
 extern uint16_t PosBuf1[3] ;//放棋子的目标位置坐标
 extern uint8_t RecBuf[];//串口接收缓冲
@@ -162,18 +162,29 @@ int main(void)
 
 		if(UART1_Rx_flg ==1)//串口发送控制命令，单片机串口接收到17个字节数据后
 		{
+			UART1_Rx_flg = 0;//先消费当前接收事件，避免同一帧被重复执行
 			if(USART1_RecCommand() ==1)//命令解析取数据
 			{
-				uint16_t ServoAngle = SERVO_PICKED_ANGLE;
-				if(PosBuf0[2] == SERVO_COMMAND_MARKER)
-				{
-					ServoAngle = PosBuf1[2];
-				}
+				uint8_t ActionResult;
 				USART1_SendStatus(STATUS_COMMAND_ACCEPTED);
-				TakeAndPutDownTheChess(PosBuf0[0], PosBuf0[1], PosBuf1[0], PosBuf1[1], ServoAngle);//在指定位置取棋子，并按指定角度放置
-				USART1_SendStatus(STATUS_ACTION_COMPLETE);
+				if(RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE)
+				{
+					ActionResult = TakeAndPutDownTheChessWithAngles(PosBuf0[0], PosBuf0[1], PosBuf1[0], PosBuf1[1], PosBuf0[2], PosBuf1[2]);
+				}
+				else
+				{
+					uint16_t ServoAngle = SERVO_PICKED_ANGLE;
+					if(PosBuf0[2] == SERVO_COMMAND_MARKER)
+					{
+						ServoAngle = PosBuf1[2];
+					}
+					ActionResult = TakeAndPutDownTheChess(PosBuf0[0], PosBuf0[1], PosBuf1[0], PosBuf1[1], ServoAngle);//在指定位置取棋子，并按指定角度放置
+				}
+				if(ActionResult == 1)
+					USART1_SendStatus(STATUS_ACTION_COMPLETE);
+				else
+					USART1_SendStatus(STATUS_ACTION_FAILED);
 			}
-			UART1_Rx_flg = 0;
 			HAL_UART_Receive_IT(&huart1, RecBuf, 17);//等待下一次的接收
 		}
 

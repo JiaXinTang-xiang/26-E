@@ -65,6 +65,8 @@ class ManualCalibrationApp:
         self.test_result = tk.StringVar(value="先点击取点和放点。")
 
         self._build_ui()
+        if serial_port:
+            self._connect_serial()
         self._load_draft()
         self._load_motion_calibration()
         self._open_camera()
@@ -301,15 +303,17 @@ class ManualCalibrationApp:
         return True
 
     def _send_pick_and_place(self) -> None:
+        if not self.serial.connected:
+            messagebox.showwarning("串口未连接", "请先连接 CH340 对应的 COM 端口。")
+            return
         try:
             if self.locked_task is None and not self._lock_task():
                 return
             source_x, source_y, destination_x, destination_y = self.locked_task
             frame = build_pick_and_place_frame(source_x, source_y, destination_x, destination_y)
             self.serial.send(frame)
-            action = "已发送" if self.serial.connected else "未连接串口，模拟生成"
             self._append_serial_log(f"TX {len(frame)} B: {frame.hex(' ').upper()}")
-            self.status.set(f"{action}取放帧：{frame.hex(' ').upper()}。请让控制器在源点停住后记录。")
+            self.status.set(f"已发送取放帧：{frame.hex(' ').upper()}。请等待控制器执行。")
         except Exception as exc:
             messagebox.showerror("发送失败", str(exc))
 
@@ -387,7 +391,7 @@ class ManualCalibrationApp:
             messagebox.showwarning("尚未选完", "请先分别点击取棋点和放棋点。")
             return
         if not self.serial.connected:
-            messagebox.showwarning("串口未连接", "请先连接 COM32，再执行真实取放测试。")
+            messagebox.showwarning("串口未连接", "请先连接 CH340 对应的 COM 端口，再执行真实取放测试。")
             return
         try:
             source = self._pixel_to_safe_pulses(self.test_source_pixel)

@@ -9,6 +9,7 @@ FRAME_HEADER = 0xAA
 FRAME_LENGTH = 0x0F
 FRAME_FOOTER = 0x55
 CMD_PICK_AND_PLACE = 0xA1
+CMD_PICK_AND_PLACE_DUAL_ANGLE = 0xA2
 SERVO_COMMAND_MARKER = 0x5A5A
 
 STATUS_FRAME_LENGTH = 0x03
@@ -20,7 +21,7 @@ STATUS_NAMES = {
     STATUS_COMMAND_ACCEPTED: "命令已接收",
     STATUS_ACTION_COMPLETE: "动作已完成并回零",
     STATUS_COMMAND_REJECTED: "命令校验失败或参数越界",
-    STATUS_ACTION_FAILED: "动作或回零超时失败",
+    STATUS_ACTION_FAILED: "正常运动计数停止，动作已中止",
 }
 
 
@@ -55,11 +56,38 @@ def build_pick_and_place_frame(
     return bytes([FRAME_HEADER, FRAME_LENGTH]) + payload + bytes([checksum, FRAME_FOOTER])
 
 
+def build_dual_angle_pick_and_place_frame(
+    source_x: int, source_y: int, destination_x: int, destination_y: int,
+    *, pick_angle_deg: int, place_angle_deg: int,
+) -> bytes:
+    """Build an A2 frame carrying independent pick and place servo angles."""
+    values = (
+        source_x, source_y, pick_angle_deg,
+        destination_x, destination_y, place_angle_deg,
+    )
+    if any(not 0 <= value <= 0xFFFF for value in values):
+        raise ValueError("all pulse coordinates must fit an unsigned 16-bit value")
+    if not 0 <= pick_angle_deg <= 270 or not 0 <= place_angle_deg <= 270:
+        raise ValueError("servo angles must be between 0 and 270 degrees")
+    payload = struct.pack(
+        ">BHHHHHH", CMD_PICK_AND_PLACE_DUAL_ANGLE,
+        source_x, source_y, pick_angle_deg,
+        destination_x, destination_y, place_angle_deg,
+    )
+    checksum = 0
+    for value in bytes([FRAME_LENGTH]) + payload:
+        checksum ^= value
+    return bytes([FRAME_HEADER, FRAME_LENGTH]) + payload + bytes([checksum, FRAME_FOOTER])
+
+
 class GantryStatusParser:
     """Extract compact controller status frames from echoed serial traffic."""
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+
+    def reset(self) -> None:
+        self._buffer.clear()
 
     def feed(self, data: bytes) -> list[int]:
         self._buffer.extend(data)
@@ -108,7 +136,11 @@ class OptionalSerialPort:
             import serial
         except ImportError as exc:
             raise RuntimeError("install pyserial to use a physical serial port") from exc
-        self._serial = serial.Serial(self.port, self.baudrate, timeout=0.2)
+        self._serial = serial.Serial(
+            self.port, self.baudrate, timeout=0, write_timeout=1.0,
+        )
+        self._serial.reset_input_buffer()
+        self._serial.reset_output_buffer()
 
     def send(self, frame: bytes) -> None:
         if self._serial is not None:
@@ -116,6 +148,11 @@ class OptionalSerialPort:
             self._serial.flush()
             if written != len(frame):
                 raise RuntimeError(f"serial write incomplete: {written}/{len(frame)} bytes")
+
+    def discard_input(self) -> None:
+        """Discard status bytes left over from an earlier command."""
+        if self._serial is not None:
+            self._serial.reset_input_buffer()
 
     def read_available(self) -> bytes:
         """Return pending controller bytes without blocking the GUI."""

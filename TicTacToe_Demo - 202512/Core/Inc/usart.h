@@ -37,9 +37,12 @@ extern UART_HandleTypeDef huart1;
 /* USER CODE BEGIN Private defines */
 
 #define SERVO_COMMAND_MARKER       0x5A5A
+#define COMMAND_PICK_AND_PLACE       0xA1
+#define COMMAND_DUAL_SERVO_ANGLE     0xA2
 #define STATUS_COMMAND_ACCEPTED      0xB0
 #define STATUS_ACTION_COMPLETE       0xB1
 #define STATUS_COMMAND_REJECTED      0xB2
+#define STATUS_ACTION_FAILED         0xB3
 
 /* USER CODE END Private defines */
 

@@ -33,6 +33,9 @@ class AssemblyConfig:
     minimum_union_convexity_ratio: float = 0.92
     minimum_hull_rectangle_ratio: float = 0.90
     maximum_overlap_ratio: float = 0.02
+    placement_gap_mm: float = 5.0
+    maximum_piece_offset_mm: float = 12.0
+    maximum_corresponding_vertex_distance_mm: float = 20.0
     # Diagnostic only: physical size no longer rejects a rectangular result.
     maximum_dimension_error_ratio: float | None = None
 

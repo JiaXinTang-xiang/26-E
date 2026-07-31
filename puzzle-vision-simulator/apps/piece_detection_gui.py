@@ -641,11 +641,12 @@ class PieceDetectionApp:
         score = document["quality"]["geometry_score"]
         recovered = document["quality"]["recovered_size_mm"]
         fill_ratio = document["quality"]["rectangle_fill_ratio"]
+        placement_gap = document["quality"]["placement_gap_actual_mm"]
         pulse_note = "已含目标脉冲" if self.calibration.matrix is not None else "未加载脉冲标定"
         self.planning_state.set(
             f"拼接方案：完成，几何分={score:.3f}，恢复尺寸="
             f"{recovered[0]:.1f}×{recovered[1]:.1f} mm，"
-            f"矩形填充率={fill_ratio:.1%}，{pulse_note}"
+            f"矩形填充率={fill_ratio:.1%}，安全缝={placement_gap:.1f} mm，{pulse_note}"
         )
         self.status.set(
             f"方案已保存到 {ASSEMBLY_PLAN_PATH}，预览图保存到 {ASSEMBLY_PREVIEW_PATH}；"

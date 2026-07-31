@@ -24,7 +24,7 @@
 
 /* USER CODE BEGIN 0 */
 uint8_t RecBuf[17]={0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}; //串口接收数据缓冲区
-uint8_t UART1_Rx_flg = 0; //串口接收完成中断标志
+volatile uint8_t UART1_Rx_flg = 0; //串口接收完成中断标志
 uint16_t UART1_Rx_cnt = 17; //串口接收数据个数
 
 
@@ -146,7 +146,7 @@ uint8_t USART1_RecCommand(void) //串口接收数据处理
 
 
 
-			HAL_UART_Transmit(&huart1,RecBuf,17,10); //显示接收的数据，调试时可以打开
+			//HAL_UART_Transmit(&huart1,RecBuf,17,10); //调试回显，正式通信时关闭
 
 			temp = RecBuf[1];
 			for(uint8_t i = 2;i<=14;i++) //计算校验值
@@ -154,9 +154,10 @@ uint8_t USART1_RecCommand(void) //串口接收数据处理
 				temp = temp ^ RecBuf[i];
       }
 
-			HAL_UART_Transmit(&huart1,&temp,1,10); //显示计算的校验值，调试时可以打开
+			//HAL_UART_Transmit(&huart1,&temp,1,10); //调试回显，正式通信时关闭
 
-			if(RecBuf[0] == 0xAA && RecBuf[16] == 0x55 && RecBuf[15] == temp)
+			if(RecBuf[0] == 0xAA && RecBuf[16] == 0x55 && RecBuf[15] == temp
+				&& (RecBuf[2] == COMMAND_PICK_AND_PLACE || RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE))
 			{
 
 				PosBuf0[0] = RecBuf[3]<<8 | RecBuf[4]; //3个16位数据，源位置数据
@@ -166,7 +167,10 @@ uint8_t USART1_RecCommand(void) //串口接收数据处理
 				PosBuf1[1] = RecBuf[11]<<8 | RecBuf[12];
 				PosBuf1[2] = RecBuf[13]<<8 | RecBuf[14];
 				if(PosBuf0[0] <= MAXPosX && PosBuf0[1] <= MAXPosY && PosBuf1[0] <= MAXPosX && PosBuf1[1] <= MAXPosY
-					&& (PosBuf0[2] != SERVO_COMMAND_MARKER || PosBuf1[2] <= SERVO_MAX_ANGLE)) //判断坐标和舵机角度范围
+					&& ((RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE
+						&& PosBuf0[2] <= SERVO_MAX_ANGLE && PosBuf1[2] <= SERVO_MAX_ANGLE)
+						|| (RecBuf[2] == COMMAND_PICK_AND_PLACE
+							&& (PosBuf0[2] != SERVO_COMMAND_MARKER || PosBuf1[2] <= SERVO_MAX_ANGLE)))) //判断坐标和舵机角度范围
 				{
 					//将6个16位数据转换为12个字节，用于发送验证
 					RecBuf2[0] = PosBuf0[0]>>8; //取高8位
@@ -181,7 +185,7 @@ uint8_t USART1_RecCommand(void) //串口接收数据处理
 					RecBuf2[9] = PosBuf1[1];
 					RecBuf2[10] = PosBuf1[2]>>8;
 					RecBuf2[11] = PosBuf1[2];
-					HAL_UART_Transmit(&huart1,RecBuf2,12,10); //显示获取的数据值，调试时可以打开
+					//HAL_UART_Transmit(&huart1,RecBuf2,12,10); //调试回显，正式通信时关闭
 					return(1);
 				}
 			}

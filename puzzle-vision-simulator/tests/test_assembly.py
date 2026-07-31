@@ -4,7 +4,12 @@ import unittest
 
 import numpy as np
 
-from puzzle_device.planning import AssemblyConfig, build_movement_plan, solve_assembly
+from puzzle_device.planning import (
+    AssemblyConfig,
+    build_movement_plan,
+    draw_assembly_preview,
+    solve_assembly,
+)
 from puzzle_device.planning.assembly import (
     a4_to_global_pixels,
     transform_global_points,
@@ -130,6 +135,107 @@ class AssemblyTest(unittest.TestCase):
         self.assertIsNotNone(record["source_pick_pulse"])
         self.assertIsNotNone(record["target_pick_pulse"])
         self.assertIn("rotation_deg", record)
+
+    def test_execution_gap_separates_neighbours_without_changing_rotation(self):
+        config = AssemblyConfig(placement_gap_mm=5.0)
+        source = [
+            np.array([[0, 0], [50, 0], [50, 60], [0, 60]], float),
+            np.array([[50, 0], [100, 0], [100, 60], [50, 60]], float),
+        ]
+        placed = _place(source, config)
+        observations = []
+        for index, polygon in enumerate(placed):
+            observations.append(PieceObservation(
+                piece_id=index,
+                contour=np.round(polygon).astype(np.int32),
+                polygon=polygon,
+                mask=np.zeros((720, 1280), np.uint8),
+                center=tuple(polygon.mean(axis=0)),
+                pick_point=tuple(polygon.mean(axis=0)),
+                pick_clearance_px=20.0,
+                area_px=5000.0,
+                pca_angle_deg=0.0,
+                longest_edge_angle_deg=0.0,
+                bounding_box=(0, 0, 1, 1),
+                confidence=1.0,
+            ))
+        assembly = solve_assembly(placed, ROI, config, require_upper_half=False)
+        document = build_movement_plan(observations, assembly, config=config)
+        quality = document["quality"]
+        self.assertGreaterEqual(quality["placement_gap_actual_mm"], 4.99)
+        self.assertLessEqual(quality["maximum_corresponding_vertex_distance_mm"], 20.0)
+        offsets = [np.asarray(piece["target_offset_a4_mm"]) for piece in document["pieces"]]
+        self.assertTrue(all(np.linalg.norm(offset) <= 12.01 for offset in offsets))
+        self.assertTrue(all(
+            abs(piece["rotation_deg"] - angle) < 1e-3
+            for piece, angle in zip(
+                document["pieces"],
+                [
+                    np.degrees(np.arctan2(transform[1, 0], transform[0, 0]))
+                    for transform in assembly.transforms
+                ],
+            )
+        ))
+
+    def test_three_strips_keep_centre_piece_fixed_and_create_gap(self):
+        config = AssemblyConfig(placement_gap_mm=5.0)
+        source = [
+            np.array([[0, 0], [100 / 3, 0], [100 / 3, 60], [0, 60]], float),
+            np.array([[100 / 3, 0], [200 / 3, 0], [200 / 3, 60], [100 / 3, 60]], float),
+            np.array([[200 / 3, 0], [100, 0], [100, 60], [200 / 3, 60]], float),
+        ]
+        placed = _place(source, config)
+        observations = [
+            PieceObservation(
+                piece_id=index,
+                contour=np.round(polygon).astype(np.int32),
+                polygon=polygon,
+                mask=np.zeros((720, 1280), np.uint8),
+                center=tuple(polygon.mean(axis=0)),
+                pick_point=tuple(polygon.mean(axis=0)),
+                pick_clearance_px=20.0,
+                area_px=5000.0,
+                pca_angle_deg=0.0,
+                longest_edge_angle_deg=0.0,
+                bounding_box=(0, 0, 1, 1),
+                confidence=1.0,
+            )
+            for index, polygon in enumerate(placed)
+        ]
+        assembly = solve_assembly(placed, ROI, config, require_upper_half=False)
+        document = build_movement_plan(observations, assembly, config=config)
+
+        offsets = [np.asarray(piece["target_offset_a4_mm"]) for piece in document["pieces"]]
+        centre_index = min(range(3), key=lambda index: np.linalg.norm(offsets[index]))
+        self.assertTrue(np.allclose(offsets[centre_index], [0.0, 0.0], atol=1e-3))
+        self.assertGreaterEqual(document["quality"]["placement_gap_actual_mm"], 4.99)
+        self.assertLessEqual(
+            document["quality"]["maximum_corresponding_vertex_distance_mm"], 20.0
+        )
+
+    def test_zero_execution_gap_preserves_ideal_targets(self):
+        config = AssemblyConfig(placement_gap_mm=0.0)
+        polygon = a4_to_global_pixels(
+            np.array([[0, 0], [100, 0], [100, 60], [0, 60]], float), ROI, config
+        )
+        observation = PieceObservation(
+            piece_id=0,
+            contour=np.round(polygon).astype(np.int32),
+            polygon=polygon,
+            mask=np.zeros((720, 1280), np.uint8),
+            center=tuple(polygon.mean(axis=0)),
+            pick_point=tuple(polygon.mean(axis=0)),
+            pick_clearance_px=20.0,
+            area_px=6000.0,
+            pca_angle_deg=0.0,
+            longest_edge_angle_deg=0.0,
+            bounding_box=(0, 0, 1, 1),
+            confidence=1.0,
+        )
+        assembly = solve_assembly([polygon], ROI, config, require_upper_half=False)
+        document = build_movement_plan([observation], assembly, config=config)
+        self.assertEqual(document["pieces"][0]["target_offset_a4_mm"], [0.0, 0.0])
+        self.assertEqual(document["quality"]["placement_gap_actual_mm"], 0.0)
 
 
 if __name__ == "__main__":

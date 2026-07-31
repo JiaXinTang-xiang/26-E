@@ -3,28 +3,93 @@
 #include "stdio.h"
 #include "tim.h"
 #include "Servo.h"
-uint16_t PulseNumOfStepMotorY = 0;
-uint16_t PulseNumOfStepMotorX = 0;
-uint16_t PulseNumOfStepMotorZ = 0;
+volatile uint16_t PulseNumOfStepMotorY = 0;
+volatile uint16_t PulseNumOfStepMotorX = 0;
+volatile uint16_t PulseNumOfStepMotorZ = 0;
 
-uint8_t FlagDirOfStepMotorY = PositiveDir;
-uint8_t FlagDirOfStepMotorX = PositiveDir;
-uint8_t FlagDirOfStepMotorZ = PositiveDir;
+volatile uint8_t FlagDirOfStepMotorY = PositiveDir;
+volatile uint8_t FlagDirOfStepMotorX = PositiveDir;
+volatile uint8_t FlagDirOfStepMotorZ = PositiveDir;
 
 extern TIM_HandleTypeDef htim2;
 
-uint16_t PosY = 0;
-uint16_t PosX = 0;
-uint16_t PosZ = 0;//步进电机当前位置
+volatile uint16_t PosY = 0;
+volatile uint16_t PosX = 0;
+volatile uint16_t PosZ = 0;//步进电机当前位置
 //2GT同步带减速比2mm齿
 //16细分同步带，假设电机驱动方式为1脉冲步进距离为（1.8°*2mm*16/360°）=0.16mm，同步带转1圈需要走12.5个脉冲，同步带移动2mm
 //20细分同步带，假设电机驱动方式为1脉冲步进距离为（1.8°*2mm*20/360°）=0.20mm，同步带转1圈需要走10个脉冲，同步带移动2mm
-uint8_t FlagMotorYReset = 0;
-uint8_t FlagMotorXReset = 0;
-uint8_t FlagMotorZReset = 0;
+volatile uint8_t FlagMotorYReset = 0;
+volatile uint8_t FlagMotorXReset = 0;
+volatile uint8_t FlagMotorZReset = 0;
 
-uint8_t FlagReset = 0;//复位标志
+volatile uint8_t FlagReset = 0;//复位标志
 uint8_t FlagMotorMove = 0;//电机运动标志，归零的时候不采集和计算。
+
+#define MOTOR_STALL_TIMEOUT_MS 1000U
+
+static void StopNormalMotion(void)
+{
+	DisableStepMotor(StepMotorX);
+	DisableStepMotor(StepMotorY);
+	DisableStepMotor(StepMotorZ);
+	PulseNumOfStepMotorX = 0;
+	PulseNumOfStepMotorY = 0;
+	PulseNumOfStepMotorZ = 0;
+	ControlEM(0);
+}
+
+static uint8_t WaitXYMotion(void)
+{
+	uint16_t LastX = PulseNumOfStepMotorX;
+	uint16_t LastY = PulseNumOfStepMotorY;
+	uint32_t LastXProgressTick = HAL_GetTick();
+	uint32_t LastYProgressTick = LastXProgressTick;
+
+	while(PulseNumOfStepMotorX > 0 || PulseNumOfStepMotorY > 0)
+	{
+		if(PulseNumOfStepMotorX != LastX)
+		{
+			LastX = PulseNumOfStepMotorX;
+			LastXProgressTick = HAL_GetTick();
+		}
+		if(PulseNumOfStepMotorY != LastY)
+		{
+			LastY = PulseNumOfStepMotorY;
+			LastYProgressTick = HAL_GetTick();
+		}
+		if((PulseNumOfStepMotorX > 0 && HAL_GetTick() - LastXProgressTick >= MOTOR_STALL_TIMEOUT_MS)
+			|| (PulseNumOfStepMotorY > 0 && HAL_GetTick() - LastYProgressTick >= MOTOR_STALL_TIMEOUT_MS))
+		{
+			StopNormalMotion();
+			return 0;
+		}
+		HAL_Delay(1);
+	}
+	return 1;
+}
+
+static uint8_t WaitZMotion(void)
+{
+	uint16_t LastZ = PulseNumOfStepMotorZ;
+	uint32_t LastProgressTick = HAL_GetTick();
+
+	while(PulseNumOfStepMotorZ > 0)
+	{
+		if(PulseNumOfStepMotorZ != LastZ)
+		{
+			LastZ = PulseNumOfStepMotorZ;
+			LastProgressTick = HAL_GetTick();
+		}
+		else if(HAL_GetTick() - LastProgressTick >= MOTOR_STALL_TIMEOUT_MS)
+		{
+			StopNormalMotion();
+			return 0;
+		}
+		HAL_Delay(1);
+	}
+	return 1;
+}
 
 void ResetStepMotor(void)
 {
@@ -116,7 +181,7 @@ void ResetStepMotor(void)
 }
 
 
-void PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle)//移动到目标坐标，旋转后放下棋子
+uint8_t PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle)//移动到目标坐标，旋转后放下棋子
 {
 	if(LocationX >= PosX)
 		DriveStepMotor(StepMotorX, PositiveDir, LocationX - PosX);
@@ -128,7 +193,7 @@ void PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle
 	else
 		DriveStepMotor(StepMotorY, NegativeDir, PosY - LocationY);
 
-	while( PulseNumOfStepMotorY > 0 || PulseNumOfStepMotorX > 0 ) HAL_Delay(1);//X和Y轴运动到位后,while循环需要加上延时否则会过快导致进入死循环
+	if(WaitXYMotion() == 0) return 0;
 //		printf("AAA:%#x  BBB:%#x\r\n",PulseNumOfStepMotorY,PulseNumOfStepMotorX);
 	HAL_Delay(DrivePaulseTime);
 
@@ -136,7 +201,7 @@ void PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle
 	HAL_Delay(DrivePaulseTime);
 
 	DriveStepMotor(StepMotorZ, PositiveDir, MAXPosZ);	//Z轴下降
-	while( PulseNumOfStepMotorZ > 0 ) HAL_Delay(1);
+	if(WaitZMotion() == 0) return 0;
 	//		printf("C:%#x\r\n",PulseNumOfStepMotorZ);
 
 	HAL_Delay(20);
@@ -146,9 +211,10 @@ void PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle
   FlagMotorZReset = 0;
 
 	ResetStepMotor();	//复位
+	return 1;
 }
 
-void TakeAndPutDownTheChess(uint16_t LocationX0, uint16_t LocationY0, uint16_t LocationX1, uint16_t LocationY1, uint16_t ServoAngle)//在指定位置取棋子，并按指定角度放到目标坐标处
+uint8_t TakeAndPutDownTheChess(uint16_t LocationX0, uint16_t LocationY0, uint16_t LocationX1, uint16_t LocationY1, uint16_t ServoAngle)//在指定位置取棋子，并按指定角度放到目标坐标处
 {
 	if(LocationX0 >= PosX)
 		DriveStepMotor(StepMotorX, PositiveDir, LocationX0 - PosX);
@@ -160,24 +226,56 @@ void TakeAndPutDownTheChess(uint16_t LocationX0, uint16_t LocationY0, uint16_t L
 	else
 		DriveStepMotor(StepMotorY, NegativeDir, PosY - LocationY0);
 
-	while( PulseNumOfStepMotorY > 0 || PulseNumOfStepMotorX > 0 ) HAL_Delay(1);//X和Y轴运动到位后,while循环需要加上延时否则会过快导致进入死循环
+	if(WaitXYMotion() == 0) return 0;
 
 	HAL_Delay(DrivePaulseTime);		//停顿一下
 
 	DriveStepMotor(StepMotorZ, PositiveDir, MAXPosZ);	//Z轴下降
-	while( PulseNumOfStepMotorZ > 0 ) HAL_Delay(1);
+	if(WaitZMotion() == 0) return 0;
 
 	HAL_Delay(20);
 	ControlEM(1);//打开电磁铁,吸住棋子
 	HAL_Delay(20);
 
 	DriveStepMotor(StepMotorZ, NegativeDir, MAXPosZ);	//Z轴抬升
-	while( PulseNumOfStepMotorZ > 0 ) HAL_Delay(1);
+	if(WaitZMotion() == 0) return 0;
 
 	HAL_Delay(DrivePaulseTime);		//停顿一下
 
-	PutDownTheChess(LocationX1, LocationY1, ServoAngle);//移动到目标位置，旋转后放下
+	return PutDownTheChess(LocationX1, LocationY1, ServoAngle);//移动到目标位置，旋转后放下
 
+}
+
+uint8_t TakeAndPutDownTheChessWithAngles(uint16_t LocationX0, uint16_t LocationY0, uint16_t LocationX1, uint16_t LocationY1, uint16_t PickAngle, uint16_t PlaceAngle)
+{
+	if(LocationX0 >= PosX)
+		DriveStepMotor(StepMotorX, PositiveDir, LocationX0 - PosX);
+	else
+		DriveStepMotor(StepMotorX, NegativeDir, PosX - LocationX0);
+
+	if(LocationY0 >= PosY)
+		DriveStepMotor(StepMotorY, PositiveDir, LocationY0 - PosY);
+	else
+		DriveStepMotor(StepMotorY, NegativeDir, PosY - LocationY0);
+
+	if(WaitXYMotion() == 0) return 0;
+	HAL_Delay(DrivePaulseTime);
+
+	SERVO_MoveToAngle(PickAngle);//Rotate to the calculated pick angle before Z descends
+	HAL_Delay(DrivePaulseTime);
+
+	DriveStepMotor(StepMotorZ, PositiveDir, MAXPosZ);
+	if(WaitZMotion() == 0) return 0;
+
+	HAL_Delay(20);
+	ControlEM(1);
+	HAL_Delay(20);
+
+	DriveStepMotor(StepMotorZ, NegativeDir, MAXPosZ);
+	if(WaitZMotion() == 0) return 0;
+
+	HAL_Delay(DrivePaulseTime);
+	return PutDownTheChess(LocationX1, LocationY1, PlaceAngle);//Rotate to the place angle after XY reaches the target
 }
 
 void EnableStepMotor(uint8_t WhichMotor)//使能步进电机
