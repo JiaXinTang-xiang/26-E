@@ -47,6 +47,19 @@ class ManualCalibrationTest(unittest.TestCase):
             calibration.save(path, {"camera": "test"})
             self.assertIn("matrix_pixel_to_pulse", path.read_text(encoding="utf-8"))
 
+    def test_affine_average_stays_finite_outside_measured_points(self):
+        calibration = PixelToGantryCalibration([
+            CalibrationPoint(0, 0, 100, 200),
+            CalibrationPoint(100, 0, 100, 500),
+            CalibrationPoint(0, 100, 500, 200),
+            CalibrationPoint(100, 100, 500, 500),
+        ])
+        metrics = calibration.fit_affine_average()
+        self.assertEqual(metrics.inlier_count, 4)
+        np.testing.assert_allclose(calibration.predict_pulse(50, 50), [300, 350])
+        prediction = np.asarray(calibration.predict_pulse(500, 500))
+        self.assertTrue(np.isfinite(prediction).all())
+
 
 if __name__ == "__main__":
     unittest.main()

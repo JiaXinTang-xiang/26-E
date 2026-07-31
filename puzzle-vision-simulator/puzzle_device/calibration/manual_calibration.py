@@ -79,6 +79,35 @@ class PixelToGantryCalibration:
         )
         return self.metrics
 
+    def fit_affine_average(self) -> CalibrationMetrics:
+        """Fit a stable affine average that cannot diverge near image edges."""
+        if len(self.points) < 3:
+            raise ValueError("at least three calibration points are required")
+        source = np.array(
+            [[p.pixel_x, p.pixel_y, 1.0] for p in self.points], np.float64)
+        target = np.array(
+            [[p.pulse_x, p.pulse_y] for p in self.points], np.float64)
+        coefficients, _residuals, rank, _singular = np.linalg.lstsq(
+            source, target, rcond=None)
+        if rank < 3:
+            raise RuntimeError(
+                "affine fitting failed; calibration pixels must cover a two-dimensional area")
+        self.matrix = np.array([
+            [coefficients[0, 0], coefficients[1, 0], coefficients[2, 0]],
+            [coefficients[0, 1], coefficients[1, 1], coefficients[2, 1]],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        self.inliers = np.ones(len(self.points), dtype=bool)
+        errors = np.linalg.norm(self.transform_pixels(source[:, :2]) - target, axis=1)
+        self.metrics = CalibrationMetrics(
+            point_count=len(self.points),
+            inlier_count=len(self.points),
+            mean_error_pulse=float(errors.mean()),
+            median_error_pulse=float(np.median(errors)),
+            max_error_pulse=float(errors.max()),
+        )
+        return self.metrics
+
     def transform_pixels(self, pixels: np.ndarray) -> np.ndarray:
         if self.matrix is None:
             raise RuntimeError("fit calibration before transforming coordinates")
@@ -114,4 +143,3 @@ class PixelToGantryCalibration:
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-

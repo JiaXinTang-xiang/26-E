@@ -87,14 +87,37 @@ class ManualCalibrationApp:
         body = ttk.Panedwindow(self.root, orient="horizontal")
         body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         viewer = ttk.Frame(body)
-        controls = ttk.Frame(body, width=390)
+        controls_host = ttk.Frame(body, width=410)
         body.add(viewer, weight=4)
-        body.add(controls, weight=2)
+        body.add(controls_host, weight=2)
 
         self.canvas = tk.Canvas(viewer, background="#202326", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Button-1>", self._on_image_click)
         self.canvas.bind("<Configure>", lambda _event: self._show_frame())
+
+        self.controls_canvas = tk.Canvas(
+            controls_host, highlightthickness=0, width=390)
+        controls_scrollbar = ttk.Scrollbar(
+            controls_host, orient="vertical", command=self.controls_canvas.yview)
+        self.controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        controls_scrollbar.pack(side="right", fill="y")
+        self.controls_canvas.pack(side="left", fill="both", expand=True)
+
+        controls = ttk.Frame(self.controls_canvas, padding=(0, 0, 6, 8))
+        controls_window = self.controls_canvas.create_window(
+            (0, 0), window=controls, anchor="nw")
+        controls.bind(
+            "<Configure>",
+            lambda _event: self.controls_canvas.configure(
+                scrollregion=self.controls_canvas.bbox("all")),
+        )
+        self.controls_canvas.bind(
+            "<Configure>",
+            lambda event: self.controls_canvas.itemconfigure(
+                controls_window, width=event.width),
+        )
+        self.root.bind_all("<MouseWheel>", self._on_controls_mousewheel, add="+")
 
         movement = ttk.LabelFrame(controls, text="一条取放标定任务", padding=12)
         movement.pack(fill="x")
@@ -154,7 +177,7 @@ class ManualCalibrationApp:
         buttons = ttk.Frame(points)
         buttons.pack(fill="x", pady=(7, 0))
         ttk.Button(buttons, text="删除选中点", command=self._delete_selected).pack(side="left")
-        ttk.Button(buttons, text="拟合矩阵", command=self._fit).pack(side="right")
+        ttk.Button(buttons, text="拟合稳定平均矩阵", command=self._fit).pack(side="right")
         ttk.Label(points, textvariable=self.result, foreground="#155e75", wraplength=350,
                   justify="left").pack(fill="x", pady=(7, 0))
         ttk.Button(points, text="保存到 configs/local/calibration.json",
@@ -163,6 +186,20 @@ class ManualCalibrationApp:
         footer = ttk.Frame(self.root, padding=(14, 6))
         footer.pack(fill="x")
         ttk.Label(footer, textvariable=self.status, foreground="#174c75").pack(side="left")
+
+    def _on_controls_mousewheel(self, event: tk.Event) -> str | None:
+        """Scroll the controls only while the pointer is over the right panel."""
+        canvas = self.controls_canvas
+        pointer_x = canvas.winfo_pointerx()
+        pointer_y = canvas.winfo_pointery()
+        inside = (
+            canvas.winfo_rootx() <= pointer_x < canvas.winfo_rootx() + canvas.winfo_width()
+            and canvas.winfo_rooty() <= pointer_y < canvas.winfo_rooty() + canvas.winfo_height()
+        )
+        if not inside or event.delta == 0:
+            return None
+        canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
 
     @staticmethod
     def _coordinate_row(parent: ttk.LabelFrame, label: str, variable: tk.StringVar, row: int) -> None:
@@ -437,17 +474,18 @@ class ManualCalibrationApp:
 
     def _fit(self) -> None:
         try:
-            metrics = self.calibration.fit()
+            metrics = self.calibration.fit_affine_average()
         except Exception as exc:
             messagebox.showerror("拟合失败", str(exc))
             return
         self._refresh_points()
         self.result.set(
-            f"拟合完成：内点 {metrics.inlier_count}/{metrics.point_count}；"
+            f"稳定平均拟合：使用 {metrics.inlier_count}/{metrics.point_count} 个点；"
             f"平均误差 {metrics.mean_error_pulse:.2f} pulse；"
+            f"中位误差 {metrics.median_error_pulse:.2f} pulse；"
             f"最大误差 {metrics.max_error_pulse:.2f} pulse"
         )
-        self.status.set("矩阵已拟合。删除误差明显偏大的点、补采覆盖边缘的点后可再次拟合。")
+        self.status.set("稳定平均矩阵已拟合，不会在标定区域边缘产生透视发散。")
 
     def _save(self) -> None:
         try:
@@ -457,6 +495,7 @@ class ManualCalibrationApp:
                 "camera_rotation_degrees": 180 if self.rotate_180 else 0,
                 "serial_port": self.serial.port,
                 "notes": "manual clicks at suction-head centre",
+                "fit_model": "affine_least_squares_average",
             })
         except Exception as exc:
             messagebox.showerror("保存失败", str(exc))

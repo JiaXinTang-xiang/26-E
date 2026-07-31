@@ -116,7 +116,7 @@ void ResetStepMotor(void)
 }
 
 
-void PutDownTheChess(uint16_t LocationX, uint16_t LocationY)//将棋子放到指定坐标处
+void PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle)//移动到目标坐标，旋转后放下棋子
 {
 	if(LocationX >= PosX)
 		DriveStepMotor(StepMotorX, PositiveDir, LocationX - PosX);
@@ -130,6 +130,9 @@ void PutDownTheChess(uint16_t LocationX, uint16_t LocationY)//将棋子放到指
 
 	while( PulseNumOfStepMotorY > 0 || PulseNumOfStepMotorX > 0 ) HAL_Delay(1);//X和Y轴运动到位后,while循环需要加上延时否则会过快导致进入死循环
 //		printf("AAA:%#x  BBB:%#x\r\n",PulseNumOfStepMotorY,PulseNumOfStepMotorX);
+	HAL_Delay(DrivePaulseTime);
+
+	SERVO_MoveToAngle(ServoAngle);//X、Y轴到达目标位置后，舵机再转到目标角度
 	HAL_Delay(DrivePaulseTime);
 
 	DriveStepMotor(StepMotorZ, PositiveDir, MAXPosZ);	//Z轴下降
@@ -171,11 +174,9 @@ void TakeAndPutDownTheChess(uint16_t LocationX0, uint16_t LocationY0, uint16_t L
 	DriveStepMotor(StepMotorZ, NegativeDir, MAXPosZ);	//Z轴抬升
 	while( PulseNumOfStepMotorZ > 0 ) HAL_Delay(1);
 
-	SERVO_MoveToAngle(ServoAngle);//吸起铁片并抬升Z轴后，舵机转到目标角度
-
 	HAL_Delay(DrivePaulseTime);		//停顿一下
 
-	PutDownTheChess(LocationX1, LocationY1);//放到指定位置
+	PutDownTheChess(LocationX1, LocationY1, ServoAngle);//移动到目标位置，旋转后放下
 
 }
 
@@ -221,9 +222,8 @@ void DriveStepMotor(uint8_t WhichMotor, uint8_t Dir, uint16_t PulseNum)
 {//哪个电机需要使能，运动多少个脉冲
 	switch (WhichMotor)
   {
-  	case StepMotorX:
+	case StepMotorX:
 		{
-			EnableStepMotor(StepMotorX);//使能X轴
 			if(Dir == PositiveDir)//正方向
 				HAL_GPIO_WritePin(GPIOA, STEPX_DIR_Pin, GPIO_PIN_RESET);
 			else
@@ -231,11 +231,14 @@ void DriveStepMotor(uint8_t WhichMotor, uint8_t Dir, uint16_t PulseNum)
 
 			PulseNumOfStepMotorX = PulseNum;
 			FlagDirOfStepMotorX = Dir;
+			if(PulseNum > 0)
+				EnableStepMotor(StepMotorX);//方向和脉冲数设置完成后再使能X轴
+			else
+				DisableStepMotor(StepMotorX);
   		break;
 		}
-  	case StepMotorY:
+	case StepMotorY:
 		{
-			EnableStepMotor(StepMotorY);//使能Y轴
 			if(Dir == PositiveDir)//正方向
 				HAL_GPIO_WritePin(GPIOB, STEPY_DIR_Pin, GPIO_PIN_RESET);
 			else
@@ -244,12 +247,15 @@ void DriveStepMotor(uint8_t WhichMotor, uint8_t Dir, uint16_t PulseNum)
 
 			PulseNumOfStepMotorY = PulseNum;
 			FlagDirOfStepMotorY = Dir;
+			if(PulseNum > 0)
+				EnableStepMotor(StepMotorY);//方向和脉冲数设置完成后再使能Y轴
+			else
+				DisableStepMotor(StepMotorY);
   		break;
 		}
 
-  	case StepMotorZ:
+	case StepMotorZ:
 		{
-			EnableStepMotor(StepMotorZ);//使能Z轴
 			if(Dir == PositiveDir)//正方向
 				HAL_GPIO_WritePin(GPIOA, STEPZ_DIR_Pin, GPIO_PIN_RESET);
 			else
@@ -258,6 +264,10 @@ void DriveStepMotor(uint8_t WhichMotor, uint8_t Dir, uint16_t PulseNum)
 			PulseNumOfStepMotorZ = PulseNum;
 
 			FlagDirOfStepMotorZ = Dir;
+			if(PulseNum > 0)
+				EnableStepMotor(StepMotorZ);//方向和脉冲数设置完成后再使能Z轴
+			else
+				DisableStepMotor(StepMotorZ);
   		break;
 		}
   	default:

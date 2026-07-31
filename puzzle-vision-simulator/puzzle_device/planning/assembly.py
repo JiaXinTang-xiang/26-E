@@ -29,7 +29,7 @@ class AssemblyConfig:
     partial_max_ratio: float = 0.88
     candidates_per_piece_pair: int = 16
     max_states: int = 50000
-    minimum_rectangle_fill_ratio: float = 0.87
+    minimum_rectangle_fill_ratio: float = 0.82
     minimum_union_convexity_ratio: float = 0.92
     minimum_hull_rectangle_ratio: float = 0.90
     maximum_overlap_ratio: float = 0.02

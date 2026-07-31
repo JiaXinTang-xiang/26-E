@@ -3,7 +3,7 @@
 <title>Static Call Graph - [.\TicTacToe_STM32103C8T6Ex\TicTacToe_STM32103C8T6Ex.axf]</title></head>
 <body><HR>
 <H1>Static Call Graph for image .\TicTacToe_STM32103C8T6Ex\TicTacToe_STM32103C8T6Ex.axf</H1><HR>
-<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 5060528: Last Updated: Fri Jul 31 03:23:19 2026
+<BR><P>#&#060CALLGRAPH&#062# ARM Linker, 5060528: Last Updated: Fri Jul 31 11:05:19 2026
 <BR><P>
 <H3>Maximum Stack Usage =        160 bytes + Unknown(Cycles, Untraceable Function Pointers)</H3><H3>
 Call chain for Maximum Stack Depth:</H3>
@@ -291,7 +291,7 @@ Global Symbols
 </UL>
 <BR>[Called By]<UL><LI><a href="#[b0]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;USART1_RecCommand
 <LI><a href="#[35]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;main
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 </UL>
 
 <P><STRONG><a name="[4]"></a>BusFault_Handler</STRONG> (Thumb, 2 bytes, Stack size 0 bytes, stm32f1xx_it.o(i.BusFault_Handler))
@@ -305,7 +305,7 @@ Global Symbols
 <BR><BR>[Calls]<UL><LI><a href="#[44]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GPIO_WritePin
 </UL>
 <BR>[Called By]<UL><LI><a href="#[ad]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;TakeAndPutDownTheChess
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 <LI><a href="#[a5]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;PutDownTheChess
 </UL>
 
@@ -318,17 +318,19 @@ Global Symbols
 <BR>[Calls]<UL><LI><a href="#[44]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GPIO_WritePin
 </UL>
 <BR>[Called By]<UL><LI><a href="#[6d]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_TIM_PWM_PulseFinishedCallback
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[47]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;DriveStepMotor
 </UL>
 
-<P><STRONG><a name="[47]"></a>DriveStepMotor</STRONG> (Thumb, 116 bytes, Stack size 24 bytes, stepmotor.o(i.DriveStepMotor))
-<BR><BR>[Stack]<UL><LI>Max Depth = 32<LI>Call Chain = DriveStepMotor &rArr; EnableStepMotor
+<P><STRONG><a name="[47]"></a>DriveStepMotor</STRONG> (Thumb, 132 bytes, Stack size 16 bytes, stepmotor.o(i.DriveStepMotor))
+<BR><BR>[Stack]<UL><LI>Max Depth = 24<LI>Call Chain = DriveStepMotor &rArr; EnableStepMotor
 </UL>
 <BR>[Calls]<UL><LI><a href="#[48]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;EnableStepMotor
+<LI><a href="#[46]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;DisableStepMotor
 <LI><a href="#[44]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GPIO_WritePin
 </UL>
 <BR>[Called By]<UL><LI><a href="#[ad]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;TakeAndPutDownTheChess
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 <LI><a href="#[a5]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;PutDownTheChess
 </UL>
 
@@ -448,9 +450,9 @@ Global Symbols
 <BR>[Calls]<UL><LI><a href="#[41]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GetTick
 </UL>
 <BR>[Called By]<UL><LI><a href="#[35]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;main
-<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
+<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
 <LI><a href="#[ad]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;TakeAndPutDownTheChess
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 <LI><a href="#[a5]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;PutDownTheChess
 </UL>
 
@@ -464,7 +466,7 @@ Global Symbols
 </UL>
 
 <P><STRONG><a name="[a8]"></a>HAL_GPIO_ReadPin</STRONG> (Thumb, 10 bytes, Stack size 0 bytes, stm32f1xx_hal_gpio.o(i.HAL_GPIO_ReadPin))
-<BR><BR>[Called By]<UL><LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<BR><BR>[Called By]<UL><LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 </UL>
 
 <P><STRONG><a name="[b2]"></a>HAL_GPIO_TogglePin</STRONG> (Thumb, 16 bytes, Stack size 0 bytes, stm32f1xx_hal_gpio.o(i.HAL_GPIO_TogglePin))
@@ -1072,21 +1074,22 @@ Global Symbols
 <P><STRONG><a name="[8]"></a>PendSV_Handler</STRONG> (Thumb, 2 bytes, Stack size 0 bytes, stm32f1xx_it.o(i.PendSV_Handler))
 <BR>[Address Reference Count : 1]<UL><LI> startup_stm32f103xb.o(RESET)
 </UL>
-<P><STRONG><a name="[a5]"></a>PutDownTheChess</STRONG> (Thumb, 136 bytes, Stack size 16 bytes, stepmotor.o(i.PutDownTheChess))
-<BR><BR>[Stack]<UL><LI>Max Depth = 88<LI>Call Chain = PutDownTheChess &rArr; ResetStepMotor &rArr; DriveStepMotor &rArr; EnableStepMotor
+<P><STRONG><a name="[a5]"></a>PutDownTheChess</STRONG> (Thumb, 150 bytes, Stack size 16 bytes, stepmotor.o(i.PutDownTheChess))
+<BR><BR>[Stack]<UL><LI>Max Depth = 80<LI>Call Chain = PutDownTheChess &rArr; ResetStepMotor &rArr; SERVO_MoveToAngle &rArr; HAL_Delay
 </UL>
-<BR>[Calls]<UL><LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<BR>[Calls]<UL><LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
+<LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 <LI><a href="#[47]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;DriveStepMotor
 <LI><a href="#[45]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ControlEM
 </UL>
 <BR>[Called By]<UL><LI><a href="#[ad]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;TakeAndPutDownTheChess
 </UL>
 
-<P><STRONG><a name="[a6]"></a>ResetStepMotor</STRONG> (Thumb, 366 bytes, Stack size 40 bytes, stepmotor.o(i.ResetStepMotor))
-<BR><BR>[Stack]<UL><LI>Max Depth = 72<LI>Call Chain = ResetStepMotor &rArr; DriveStepMotor &rArr; EnableStepMotor
+<P><STRONG><a name="[a7]"></a>ResetStepMotor</STRONG> (Thumb, 366 bytes, Stack size 40 bytes, stepmotor.o(i.ResetStepMotor))
+<BR><BR>[Stack]<UL><LI>Max Depth = 64<LI>Call Chain = ResetStepMotor &rArr; SERVO_MoveToAngle &rArr; HAL_Delay
 </UL>
-<BR>[Calls]<UL><LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
+<BR>[Calls]<UL><LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
 <LI><a href="#[a8]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GPIO_ReadPin
 <LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
 <LI><a href="#[43]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;Beep
@@ -1102,24 +1105,24 @@ Global Symbols
 <BR><BR>[Stack]<UL><LI>Max Depth = 32<LI>Call Chain = SERVO_Init &rArr; SERVO_MoveToAngle &rArr; HAL_Delay
 </UL>
 <BR>[Calls]<UL><LI><a href="#[7d]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_TIM_PWM_Start
-<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
+<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
 </UL>
 <BR>[Called By]<UL><LI><a href="#[35]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;main
 </UL>
 
-<P><STRONG><a name="[a7]"></a>SERVO_MoveToAngle</STRONG> (Thumb, 38 bytes, Stack size 8 bytes, servo.o(i.SERVO_MoveToAngle))
+<P><STRONG><a name="[a6]"></a>SERVO_MoveToAngle</STRONG> (Thumb, 38 bytes, Stack size 8 bytes, servo.o(i.SERVO_MoveToAngle))
 <BR><BR>[Stack]<UL><LI>Max Depth = 24<LI>Call Chain = SERVO_MoveToAngle &rArr; HAL_Delay
 </UL>
 <BR>[Calls]<UL><LI><a href="#[aa]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_SetAngle
 <LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
 </UL>
 <BR>[Called By]<UL><LI><a href="#[a9]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_Init
-<LI><a href="#[ad]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;TakeAndPutDownTheChess
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a5]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;PutDownTheChess
 </UL>
 
 <P><STRONG><a name="[aa]"></a>SERVO_SetAngle</STRONG> (Thumb, 36 bytes, Stack size 0 bytes, servo.o(i.SERVO_SetAngle))
-<BR><BR>[Called By]<UL><LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
+<BR><BR>[Called By]<UL><LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
 </UL>
 
 <P><STRONG><a name="[6]"></a>SVC_Handler</STRONG> (Thumb, 2 bytes, Stack size 0 bytes, stm32f1xx_it.o(i.SVC_Handler))
@@ -1210,11 +1213,10 @@ Global Symbols
 <LI><a href="#[73]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_TIM_OC_ConfigChannel
 </UL>
 
-<P><STRONG><a name="[ad]"></a>TakeAndPutDownTheChess</STRONG> (Thumb, 184 bytes, Stack size 24 bytes, stepmotor.o(i.TakeAndPutDownTheChess))
-<BR><BR>[Stack]<UL><LI>Max Depth = 112<LI>Call Chain = TakeAndPutDownTheChess &rArr; PutDownTheChess &rArr; ResetStepMotor &rArr; DriveStepMotor &rArr; EnableStepMotor
+<P><STRONG><a name="[ad]"></a>TakeAndPutDownTheChess</STRONG> (Thumb, 180 bytes, Stack size 24 bytes, stepmotor.o(i.TakeAndPutDownTheChess))
+<BR><BR>[Stack]<UL><LI>Max Depth = 104<LI>Call Chain = TakeAndPutDownTheChess &rArr; PutDownTheChess &rArr; ResetStepMotor &rArr; SERVO_MoveToAngle &rArr; HAL_Delay
 </UL>
-<BR>[Calls]<UL><LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;SERVO_MoveToAngle
-<LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
+<BR>[Calls]<UL><LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
 <LI><a href="#[a5]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;PutDownTheChess
 <LI><a href="#[47]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;DriveStepMotor
 <LI><a href="#[45]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ControlEM
@@ -1288,7 +1290,7 @@ Global Symbols
 <LI><a href="#[56]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_Delay
 <LI><a href="#[43]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;Beep
 <LI><a href="#[ad]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;TakeAndPutDownTheChess
-<LI><a href="#[a6]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
+<LI><a href="#[a7]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;ResetStepMotor
 <LI><a href="#[44]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;HAL_GPIO_WritePin
 <LI><a href="#[a3]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;OLED_Init
 <LI><a href="#[a2]">&gt;&gt;</a>&nbsp;&nbsp;&nbsp;OLED_DisplayTurn

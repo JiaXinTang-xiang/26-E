@@ -87,7 +87,7 @@ void EnableStepMotor(uint8_t WhichMotor);//使能步进电机
 void DisableStepMotor(uint8_t WhichMotor);//停止步进电机
 void ResetStepMotor(void);//上电时步进电机复位
 void ControlEM(uint8_t FlagOn_Off);//控制电磁铁开关，0：关，1：开
-void PutDownTheChess(uint16_t LocationX, uint16_t LocationY);//将棋子放到指定坐标处
+void PutDownTheChess(uint16_t LocationX, uint16_t LocationY, uint16_t ServoAngle);//移动到目标坐标，旋转后放下棋子
 void TakeAndPutDownTheChess(uint16_t LocationX0, uint16_t LocationY0, uint16_t LocationX1, uint16_t LocationY1, uint16_t ServoAngle);//在指定位置取棋子，并按指定角度放到目标坐标处
 void TestMotor1(void);////测试平台的机械臂运动最大范围
 void TestMotor2(void);//取棋子测试
