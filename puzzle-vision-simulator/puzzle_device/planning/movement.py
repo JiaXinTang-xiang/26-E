@@ -68,9 +68,23 @@ def _placement_geometry(
     if len(ideal) <= 1 or config.placement_gap_mm <= 0:
         return ideal, [np.zeros(2, dtype=np.float64) for _ in ideal], 0.0, 0.0
 
-    centers = np.asarray([polygon.mean(axis=0) for polygon in ideal], dtype=np.float64)
-    assembly_center = np.vstack(ideal).mean(axis=0)
-    radial = centers - assembly_center
+    gap_geometry = ideal
+    if assembly.placement_reference_polygons:
+        if len(assembly.placement_reference_polygons) != len(ideal):
+            raise ValueError("template placement references do not match piece count")
+        gap_geometry = [
+            np.asarray(polygon, dtype=np.float64)
+            for polygon in assembly.placement_reference_polygons
+        ]
+
+    if assembly.placement_offset_directions:
+        radial = np.asarray(assembly.placement_offset_directions, dtype=np.float64)
+        if radial.shape != (len(ideal), 2):
+            raise ValueError("template placement directions do not match piece count")
+    else:
+        centers = np.asarray([polygon.mean(axis=0) for polygon in ideal], dtype=np.float64)
+        assembly_center = np.vstack(ideal).mean(axis=0)
+        radial = centers - assembly_center
     maximum_radial_distance = max(float(np.linalg.norm(vector)) for vector in radial)
     if maximum_radial_distance <= 1e-6:
         raise ValueError("cannot create placement gap because a piece is centred on the assembly")
@@ -88,7 +102,20 @@ def _placement_geometry(
                    for first, second in neighbour_pairs)
 
     high = config.maximum_piece_offset_mm / maximum_radial_distance
-    high_polygons, high_offsets = expanded(high)
+    maximum_direction_difference = max(
+        float(np.linalg.norm(radial[first] - radial[second]))
+        for first, second in neighbour_pairs
+    )
+    if assembly.enforce_corresponding_vertex_limit and maximum_direction_difference > 1e-9:
+        high = min(
+            high,
+            config.maximum_corresponding_vertex_distance_mm
+            / maximum_direction_difference,
+        )
+    def expanded_gap_geometry(scale: float) -> list[np.ndarray]:
+        return [polygon + scale * vector for polygon, vector in zip(gap_geometry, radial)]
+
+    high_polygons = expanded_gap_geometry(high)
     if minimum_gap(high_polygons) + 1e-6 < config.placement_gap_mm:
         raise ValueError(
             f"cannot create {config.placement_gap_mm:.1f} mm placement gap within "
@@ -97,12 +124,13 @@ def _placement_geometry(
     low = 0.0
     for _ in range(32):
         middle = (low + high) / 2.0
-        polygons, _offsets = expanded(middle)
+        polygons = expanded_gap_geometry(middle)
         if minimum_gap(polygons) >= config.placement_gap_mm:
             high = middle
         else:
             low = middle
     placed, offsets = expanded(high)
+    placed_gap_geometry = expanded_gap_geometry(high)
 
     maximum_vertex_distance = 0.0
     for match in assembly.matches:
@@ -111,7 +139,10 @@ def _placement_geometry(
             maximum_vertex_distance,
             float(np.linalg.norm(offsets[first] - offsets[second])),
         )
-    if maximum_vertex_distance > config.maximum_corresponding_vertex_distance_mm + 1e-6:
+    if (
+        assembly.enforce_corresponding_vertex_limit
+        and maximum_vertex_distance > config.maximum_corresponding_vertex_distance_mm + 1e-6
+    ):
         raise ValueError(
             f"placement expansion separates corresponding vertices by "
             f"{maximum_vertex_distance:.1f} mm, exceeding 20 mm"
@@ -126,7 +157,7 @@ def _placement_geometry(
         or bounds[:, 1].max() > config.a4_height_mm - margin
     ):
         raise ValueError("placement gap would move a piece outside the lower A4 work area")
-    return placed, offsets, minimum_gap(placed), maximum_vertex_distance
+    return placed, offsets, minimum_gap(placed_gap_geometry), maximum_vertex_distance
 
 
 def target_rectangle_pixels(

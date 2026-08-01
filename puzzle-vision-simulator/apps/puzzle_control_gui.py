@@ -61,6 +61,8 @@ SERVO_HOME_ANGLE = 135
 SUPPORTED_PIECE_COUNTS = (1, 2, 3, 4)
 SERIAL_RECONNECT_DELAYS_MS = (500, 1000, 2000, 3000, 5000)
 SERIAL_HEALTH_CHECK_TIMEOUT_MS = 1500
+SERIAL_READ_RETRY_LIMIT = 3
+SERIAL_READ_RETRY_DELAY_MS = 120
 
 
 class PuzzleControlApp:
@@ -93,6 +95,8 @@ class PuzzleControlApp:
         self.serial_fault_during_motion = False
         self.serial_health_check_pending = False
         self.serial_health_check_job = None
+        self.serial_read_error_count = 0
+        self.serial_read_retry_after = 0.0
         self.preview = None
         self.photo = None
         self.current_camera_frame = None
@@ -268,6 +272,7 @@ class PuzzleControlApp:
             return
         if self.serial.connected:
             self.status_parser.reset()
+            self._reset_serial_read_retries()
             self._cancel_accept_timeout()
             self._cancel_auto_continue()
             self.auto_run_enabled = False
@@ -367,6 +372,7 @@ class PuzzleControlApp:
         was_moving = self.waiting_for_completion or self.auto_run_enabled
         self.serial.close()
         self.status_parser.reset()
+        self._reset_serial_read_retries()
         self._cancel_accept_timeout()
         self._cancel_auto_continue()
         self._cancel_serial_health_check()
@@ -384,6 +390,31 @@ class PuzzleControlApp:
             self.controller_state.set("下位机：串口断开，等待自动重连")
             self.status.set("串口通信失败，程序将在空闲状态自动尝试重连。")
             self._schedule_serial_reconnect()
+
+    def _reset_serial_read_retries(self) -> None:
+        self.serial_read_error_count = 0
+        self.serial_read_retry_after = 0.0
+
+    def _handle_serial_read_error(self, exc: Exception) -> None:
+        """Tolerate brief CH340/Windows read glitches before declaring a disconnect."""
+        self.serial_read_error_count += 1
+        if self.serial_read_error_count < SERIAL_READ_RETRY_LIMIT:
+            self.serial_read_retry_after = time.monotonic() + (
+                SERIAL_READ_RETRY_DELAY_MS / 1000.0
+            )
+            self.controller_state.set(
+                "下位机：串口读取瞬时异常，正在重试"
+            )
+            self.status.set(
+                f"串口读取瞬时异常，第 {self.serial_read_error_count}/"
+                f"{SERIAL_READ_RETRY_LIMIT - 1} 次重试；未发送任何新命令。"
+            )
+            self._append_log(
+                f"SERIAL READ RETRY {self.serial_read_error_count}/"
+                f"{SERIAL_READ_RETRY_LIMIT - 1}: {exc}"
+            )
+            return
+        self._handle_serial_fault(exc, "读取")
 
     def _schedule_serial_reconnect(self) -> None:
         if (
@@ -422,6 +453,7 @@ class PuzzleControlApp:
             return
         if self.serial.connected:
             self.status_parser.reset()
+            self._reset_serial_read_retries()
             self.serial_reconnect_attempt = 0
             self._update_serial_state()
             self.controller_state.set("下位机：串口已自动重连，建议运行通信自检")
@@ -1096,15 +1128,17 @@ class PuzzleControlApp:
         # Status reception is safety-critical. Process it before any camera IO,
         # and never poll the USB camera once the static assembly preview exists.
         try:
-            received = self.serial.read_available()
-            if received:
-                self.rx_bytes += len(received)
-                self._update_serial_state()
-                self._append_log(f"RX {len(received)} B: {received.hex(' ').upper()}")
-                for status in self.status_parser.feed(received):
-                    self._handle_status(status)
+            if time.monotonic() >= self.serial_read_retry_after:
+                received = self.serial.read_available()
+                self._reset_serial_read_retries()
+                if received:
+                    self.rx_bytes += len(received)
+                    self._update_serial_state()
+                    self._append_log(f"RX {len(received)} B: {received.hex(' ').upper()}")
+                    for status in self.status_parser.feed(received):
+                        self._handle_status(status)
         except Exception as exc:
-            self._handle_serial_fault(exc, "读取")
+            self._handle_serial_read_error(exc)
         try:
             if self.capture is not None and (self.preview is None or self.planning_active):
                 ok, frame = self.capture.read()

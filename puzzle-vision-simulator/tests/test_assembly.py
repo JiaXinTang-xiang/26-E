@@ -12,7 +12,10 @@ from puzzle_device.planning import (
     solve_assembly,
 )
 from puzzle_device.planning.assembly import (
+    _apply,
     _choose_candidate,
+    _edge_candidates,
+    _matched_seams_are_valid,
     _texture_seam_scores,
     a4_to_global_pixels,
     transform_global_points,
@@ -34,6 +37,28 @@ def _place(polygons, config):
 
 
 class AssemblyTest(unittest.TestCase):
+    def test_two_piece_search_keeps_all_complete_edge_pairs(self):
+        config = AssemblyConfig(two_piece_edge_relative_tolerance=1.0)
+        first = np.array([[0, 0], [5, 0], [5, 4], [0, 4]], dtype=float)
+        second = np.array([[7, 0], [12, 0], [12, 4], [7, 4]], dtype=float)
+        candidates = _edge_candidates([first, second], config)[(0, 1)]
+        full = [candidate for candidate in candidates if candidate[5:] == (0.0, 1.0, 0.0, 1.0)]
+        self.assertEqual(len(full), 16)
+
+    def test_seam_validation_requires_real_opposing_contact(self):
+        config = AssemblyConfig()
+        first = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+        second = np.array([[2, 0], [4, 0], [4, 2], [2, 2]], dtype=float)
+        match = ((0.0, 0, 1, 1, 3, 0.0, 1.0, 0.0, 1.0),)
+        self.assertTrue(_matched_seams_are_valid(
+            [first, second], [np.eye(3), np.eye(3)], [first, second], match, config,
+        ))
+        shifted = np.eye(3)
+        shifted[0, 2] = 2.0
+        self.assertFalse(_matched_seams_are_valid(
+            [first, second], [np.eye(3), shifted], [first, _apply(second, shifted)], match, config,
+        ))
+
     def test_self_mode_prefers_original_100_by_60_shape_without_rejecting(self):
         config = AssemblyConfig()
         identity = np.eye(3)

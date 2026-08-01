@@ -19,9 +19,37 @@ from puzzle_device.calibration.gantry_protocol import (
     select_ch340_port,
 )
 from puzzle_device.planning import build_execution_tasks
+from apps.puzzle_control_gui import PuzzleControlApp
 
 
 class ExecutionProtocolTest(unittest.TestCase):
+    def test_transient_read_error_retries_without_closing_connection(self):
+        app = PuzzleControlApp.__new__(PuzzleControlApp)
+        app.serial_read_error_count = 0
+        app.serial_read_retry_after = 0.0
+        app.controller_state = Mock()
+        app.status = Mock()
+        app._append_log = Mock()
+        app._handle_serial_fault = Mock()
+        PuzzleControlApp._handle_serial_read_error(app, OSError("temporary"))
+        self.assertEqual(app.serial_read_error_count, 1)
+        app._handle_serial_fault.assert_not_called()
+        app.controller_state.set.assert_called_once()
+
+    def test_repeated_read_errors_escalate_to_safe_disconnect(self):
+        app = PuzzleControlApp.__new__(PuzzleControlApp)
+        app.serial_read_error_count = 0
+        app.serial_read_retry_after = 0.0
+        app.controller_state = Mock()
+        app.status = Mock()
+        app._append_log = Mock()
+        app._handle_serial_fault = Mock()
+        for _ in range(3):
+            PuzzleControlApp._handle_serial_read_error(app, OSError("temporary"))
+        self.assertEqual(app.serial_read_error_count, 3)
+        app._handle_serial_fault.assert_called_once()
+        self.assertEqual(app._handle_serial_fault.call_args.args[1], "读取")
+
     def test_rotation_angle_uses_legacy_z_fields(self):
         frame = build_pick_and_place_frame(
             100, 200, 300, 400, rotation_angle_deg=123

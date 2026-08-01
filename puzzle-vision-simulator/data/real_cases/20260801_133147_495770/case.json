@@ -1,0 +1,202 @@
+{
+  "format": "puzzle-device.vision-case.v1",
+  "created_local": "2026-08-01T13:31:47.629669+08:00",
+  "roi": [
+    418,
+    36,
+    445,
+    647
+  ],
+  "detection_parameters": {
+    "segmentation_method": "background",
+    "min_area_px": 1000.0,
+    "max_area_px": 30000.0,
+    "min_area_ratio": 0.002,
+    "max_area_ratio": 0.75,
+    "min_vertices": 3,
+    "max_vertices": 5,
+    "max_pieces": 4,
+    "border_fraction": 0.04,
+    "color_distance_threshold": 14,
+    "white_saturation_max": 80,
+    "white_value_min": 150,
+    "brightness_min": 185,
+    "morphology_size": 5,
+    "gaussian_blur_size": 3,
+    "canny_lower": 70,
+    "canny_upper": 150,
+    "polygon_epsilon_min": 0.015,
+    "polygon_epsilon_preferred": 0.025,
+    "polygon_epsilon_max": 0.04,
+    "polygon_epsilon_steps": 60,
+    "min_edge_length_px": 3.0,
+    "min_edge_length_ratio": 0.025,
+    "minimum_pick_clearance_px": 5.0
+  },
+  "pieces": [
+    {
+      "piece_id": 0,
+      "center_px": [
+        728.383,
+        224.562
+      ],
+      "pick_point_px": [
+        722.0,
+        213.0
+      ],
+      "pick_clearance_px": 44.378,
+      "area_px": 11716.0,
+      "vertex_count": 3,
+      "vertices_px": [
+        [
+          776.0,
+          131.0
+        ],
+        [
+          743.0,
+          345.0
+        ],
+        [
+          663.0,
+          196.0
+        ]
+      ],
+      "pca_angle_deg": -86.843,
+      "longest_edge_angle_deg": -81.234,
+      "bounding_box": [
+        663,
+        131,
+        116,
+        215
+      ],
+      "confidence": 0.9543
+    },
+    {
+      "piece_id": 1,
+      "center_px": [
+        573.113,
+        233.18
+      ],
+      "pick_point_px": [
+        578.0,
+        175.0
+      ],
+      "pick_clearance_px": 30.56,
+      "area_px": 9825.0,
+      "vertex_count": 4,
+      "vertices_px": [
+        [
+          548.0,
+          146.0
+        ],
+        [
+          611.0,
+          146.0
+        ],
+        [
+          588.0,
+          311.0
+        ],
+        [
+          549.0,
+          359.0
+        ]
+      ],
+      "pca_angle_deg": -82.831,
+      "longest_edge_angle_deg": 89.731,
+      "bounding_box": [
+        546,
+        145,
+        68,
+        215
+      ],
+      "confidence": 0.9527
+    },
+    {
+      "piece_id": 2,
+      "center_px": [
+        487.427,
+        236.599
+      ],
+      "pick_point_px": [
+        490.0,
+        229.0
+      ],
+      "pick_clearance_px": 20.575,
+      "area_px": 2230.0,
+      "vertex_count": 5,
+      "vertices_px": [
+        [
+          473.0,
+          202.0
+        ],
+        [
+          513.0,
+          215.0
+        ],
+        [
+          502.0,
+          255.0
+        ],
+        [
+          472.0,
+          278.0
+        ],
+        [
+          469.0,
+          259.0
+        ]
+      ],
+      "pca_angle_deg": -75.805,
+      "longest_edge_angle_deg": -85.986,
+      "bounding_box": [
+        469,
+        202,
+        45,
+        77
+      ],
+      "confidence": 0.9555
+    },
+    {
+      "piece_id": 3,
+      "center_px": [
+        652.465,
+        273.923
+      ],
+      "pick_point_px": [
+        646.0,
+        276.0
+      ],
+      "pick_clearance_px": 24.769,
+      "area_px": 5358.0,
+      "vertex_count": 4,
+      "vertices_px": [
+        [
+          638.0,
+          179.0
+        ],
+        [
+          693.0,
+          328.0
+        ],
+        [
+          677.0,
+          343.0
+        ],
+        [
+          621.0,
+          285.0
+        ]
+      ],
+      "pca_angle_deg": 73.939,
+      "longest_edge_angle_deg": 69.74,
+      "bounding_box": [
+        621,
+        179,
+        73,
+        165
+      ],
+      "confidence": 0.9345
+    }
+  ]
+}

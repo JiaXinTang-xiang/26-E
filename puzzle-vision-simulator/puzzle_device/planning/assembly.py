@@ -9,10 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import itertools
+import json
 import math
 
 import cv2
 import numpy as np
+
+from .template_assembly import load_self_piece_template, solve_fixed_template
 
 
 @dataclass(frozen=True)
@@ -30,10 +33,27 @@ class AssemblyConfig:
     # Legacy nominal size for callers that request a rectangle before solving.
     target_width_mm: float = 100.0
     target_height_mm: float = 60.0
+    # Requirement 1(2) uses the same lower-half rectangle, turned end-for-end.
+    # This swaps the four fixed target positions without changing the ROI or
+    # pixel-to-pulse calibration.
+    self_template_target_rotation_deg: float = 180.0
+    # Keep the fixed self-template away from the X1-side mechanical edge.
+    self_template_target_offset_x_mm: float = -8.0
     edge_relative_tolerance: float = 0.12
+    # A two-piece puzzle has one complete shared cut edge. Search every
+    # plausible complete-edge pair instead of dropping the true seam because
+    # several unrelated outer edges happen to have closer measured lengths.
+    two_piece_edge_relative_tolerance: float = 0.30
     partial_min_ratio: float = 0.22
     partial_max_ratio: float = 0.88
     candidates_per_piece_pair: int = 16
+    # Every length-compatible edge pair must also form a physically plausible
+    # seam after its rigid placement is proposed.
+    seam_max_direction_cosine: float = -0.985
+    seam_max_collinearity_error_mm: float = 1.0
+    seam_min_contact_overlap_ratio: float = 0.92
+    seam_max_endpoint_error_mm: float = 1.5
+    seam_max_inside_normal_dot: float = -0.20
     max_states: int = 50000
     minimum_rectangle_fill_ratio: float = 0.80
     minimum_union_convexity_ratio: float = 0.90
@@ -65,6 +85,9 @@ class AssemblyPlan:
     upper_piece_ids: tuple[int, ...]
     texture_score: float | None = None
     texture_seam_scores: tuple[float, ...] = ()
+    placement_offset_directions: tuple[tuple[float, float], ...] = ()
+    placement_reference_polygons: tuple[np.ndarray, ...] = ()
+    enforce_corresponding_vertex_limit: bool = True
 
 
 def _range_error_ratio(value: float, minimum: float, maximum: float) -> float:
@@ -178,6 +201,11 @@ def _match_segments(polygons, match):
 
 def _edge_candidates(polygons, config: AssemblyConfig):
     candidates_by_pair = {}
+    two_piece_mode = len(polygons) == 2
+    full_edge_tolerance = (
+        config.two_piece_edge_relative_tolerance
+        if two_piece_mode else config.edge_relative_tolerance
+    )
     for first, second in itertools.combinations(range(len(polygons)), 2):
         full = []
         partial = []
@@ -186,7 +214,7 @@ def _edge_candidates(polygons, config: AssemblyConfig):
             for second_edge, (second_a, second_b) in enumerate(_edges(polygons[second])):
                 second_length = float(np.linalg.norm(second_b - second_a))
                 relative = abs(first_length - second_length) / max(first_length, second_length, 1e-6)
-                if relative <= config.edge_relative_tolerance:
+                if relative <= full_edge_tolerance:
                     full.append((relative, first, first_edge, second, second_edge, 0.0, 1.0, 0.0, 1.0))
                 ratio = min(first_length, second_length) / max(first_length, second_length, 1e-6)
                 if config.partial_min_ratio <= ratio <= config.partial_max_ratio:
@@ -203,8 +231,14 @@ def _edge_candidates(polygons, config: AssemblyConfig):
                         ])
         full.sort()
         partial.sort()
-        full_limit = min(len(full), max(1, config.candidates_per_piece_pair // 4))
-        partial_limit = max(0, config.candidates_per_piece_pair - full_limit)
+        if two_piece_mode:
+            # For two fragments the shared cut is necessarily a full edge.
+            # There are at most 25 pairs, so exhaustive comparison is cheap.
+            full_limit = len(full)
+            partial_limit = 0
+        else:
+            full_limit = min(len(full), max(1, config.candidates_per_piece_pair // 4))
+            partial_limit = max(0, config.candidates_per_piece_pair - full_limit)
 
         # Keep candidates across the whole length-ratio range. The correct
         # physical cut can have a lower ratio than several plausible but wrong
@@ -308,6 +342,8 @@ def _assemble(polygons, matches, config: AssemblyConfig):
     if any(transform is None for transform in transforms):
         return None
     placed = [_apply(polygon, transform) for polygon, transform in zip(polygons, transforms)]
+    if not _matched_seams_are_valid(polygons, transforms, placed, matches, config):
+        return None
     overlap = sum(
         _intersection_area(placed[first], placed[second])
         for first, second in itertools.combinations(range(len(placed)), 2)
@@ -349,6 +385,70 @@ def _assemble(polygons, matches, config: AssemblyConfig):
         float(overlap_ratio),
         float(dimension_error),
     )
+
+
+def _point_to_line_distance(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> float:
+    direction = np.asarray(end, dtype=np.float64) - np.asarray(start, dtype=np.float64)
+    length = float(np.linalg.norm(direction))
+    if length <= 1e-9:
+        return math.inf
+    offset = np.asarray(point, dtype=np.float64) - start
+    cross = direction[0] * offset[1] - direction[1] * offset[0]
+    return abs(float(cross)) / length
+
+
+def _matched_seams_are_valid(
+    polygons: list[np.ndarray],
+    transforms: list[np.ndarray],
+    placed: list[np.ndarray],
+    matches: tuple,
+    config: AssemblyConfig,
+) -> bool:
+    """Reject length-only candidates that do not make a real shared seam."""
+    for match in matches:
+        _, first, _first_edge, second, _second_edge, *_ = match
+        first_a, first_b, second_a, second_b = _match_segments(polygons, match)
+        first_a, first_b = _apply(np.asarray([first_a, first_b]), transforms[first])
+        second_a, second_b = _apply(np.asarray([second_a, second_b]), transforms[second])
+        first_vector = first_b - first_a
+        second_vector = second_b - second_a
+        first_length = float(np.linalg.norm(first_vector))
+        second_length = float(np.linalg.norm(second_vector))
+        if first_length <= 1e-9 or second_length <= 1e-9:
+            return False
+        direction_cosine = float(first_vector @ second_vector / (first_length * second_length))
+        if direction_cosine > config.seam_max_direction_cosine:
+            return False
+        line_error = max(
+            _point_to_line_distance(second_a, first_a, first_b),
+            _point_to_line_distance(second_b, first_a, first_b),
+        )
+        if line_error > config.seam_max_collinearity_error_mm:
+            return False
+        direction = first_vector / first_length
+        projected_second = np.array([
+            float((second_a - first_a) @ direction),
+            float((second_b - first_a) @ direction),
+        ])
+        overlap = max(
+            0.0,
+            min(first_length, float(projected_second.max()))
+            - max(0.0, float(projected_second.min())),
+        )
+        if overlap / min(first_length, second_length) < config.seam_min_contact_overlap_ratio:
+            return False
+        endpoint_error = max(
+            float(np.linalg.norm(first_a - second_b)),
+            float(np.linalg.norm(first_b - second_a)),
+        )
+        if endpoint_error > config.seam_max_endpoint_error_mm:
+            return False
+
+        first_normal = _inside_normal(placed[first], first_a, first_b)
+        second_normal = _inside_normal(placed[second], second_a, second_b)
+        if float(first_normal @ second_normal) > config.seam_max_inside_normal_dot:
+            return False
+    return True
 
 
 def _inside_normal(
@@ -664,14 +764,133 @@ def solve_self_assembly(
     config: AssemblyConfig | None = None,
     require_upper_half: bool = True,
 ) -> AssemblyPlan:
-    """Solve self-prepared pieces with the original 100x60, 5:3 preference."""
-    return solve_assembly(
-        polygons,
-        roi,
-        config,
-        require_upper_half=require_upper_half,
-        prefer_fixed_card_shape=True,
-    )
+    """Solve the self-prepared four pieces by fixed template, then general fallback."""
+    cfg = config or AssemblyConfig()
+    if len(polygons) != 4:
+        raise ValueError("自备拼图要求恰好识别到4块碎片")
+    local_polygons = [
+        global_pixels_to_a4(np.asarray(p, dtype=np.float64), roi, cfg)
+        for p in polygons
+    ]
+    split_y = cfg.a4_height_mm * cfg.split_fraction
+    if require_upper_half:
+        lower = [
+            index for index, polygon in enumerate(local_polygons)
+            if polygon.mean(axis=0)[1] >= split_y
+        ]
+        if lower:
+            raise ValueError(
+                "碎片不全在 A4 上半区：" + ", ".join(f"P{index}" for index in lower)
+            )
+
+    try:
+        template = load_self_piece_template()
+        result = solve_fixed_template(local_polygons, template)
+        target_width, target_height = template.target_size_mm
+        lower_height = cfg.a4_height_mm - split_y
+        if target_width > cfg.a4_width_mm or target_height > lower_height:
+            raise ValueError("固定模板目标尺寸超出 A4 下半区")
+        target_center = np.array([
+            cfg.a4_width_mm / 2.0 + cfg.self_template_target_offset_x_mm,
+            split_y + lower_height / 2.0,
+        ])
+        target_origin = target_center - [target_width / 2.0, target_height / 2.0]
+        template_center = np.array([target_width / 2.0, target_height / 2.0])
+        target_rotation = math.radians(cfg.self_template_target_rotation_deg)
+        # Result transforms end in template coordinates. Rotate that complete
+        # shape about its own centre before placing it in the lower A4 region.
+        target_pose = (
+            _rigid(0.0, float(target_center[0]), float(target_center[1]))
+            @ _rigid(target_rotation)
+            @ _rigid(0.0, float(-template_center[0]), float(-template_center[1]))
+        )
+        transforms = tuple(target_pose @ transform for transform in result.transforms)
+        placed = [
+            _apply(polygon, transform)
+            for polygon, transform in zip(local_polygons, transforms)
+        ]
+        overlap = sum(
+            _intersection_area(placed[first], placed[second])
+            for first, second in itertools.combinations(range(4), 2)
+        )
+        total_area = sum(
+            abs(float(cv2.contourArea(polygon.astype(np.float32))))
+            for polygon in placed
+        )
+        rect_area = max(target_width * target_height, 1.0)
+        union_area = max(0.0, total_area - overlap)
+        points = np.vstack(placed).astype(np.float32)
+        hull_area = max(abs(float(cv2.contourArea(cv2.convexHull(points)))), 1.0)
+        rectangle_fill_ratio = min(union_area / rect_area, 1.0)
+        union_convexity_ratio = min(union_area / hull_area, 1.0)
+        hull_rectangle_ratio = min(hull_area / rect_area, 1.0)
+        overlap_ratio = overlap / max(total_area, 1.0)
+        if rectangle_fill_ratio < cfg.minimum_rectangle_fill_ratio:
+            raise RuntimeError(
+                f"固定模板矩形填充率过低：{rectangle_fill_ratio:.1%}"
+            )
+        if overlap_ratio > cfg.maximum_overlap_ratio:
+            raise RuntimeError(
+                f"固定模板重叠率过高：{overlap_ratio:.1%}"
+            )
+
+        # Template-neighbour graph. Edge indices/fractions are diagnostic only;
+        # movement planning uses the piece pairs to create the safety gap.
+        template_pairs = ((0, 1), (0, 2), (1, 2), (1, 3), (2, 3))
+        observed_by_template = {
+            template_index: observed_index
+            for observed_index, template_index in enumerate(result.assignment)
+        }
+        matches = tuple(
+            (
+                float(result.piece_errors[observed_by_template[first]]
+                      + result.piece_errors[observed_by_template[second]]),
+                observed_by_template[first], 0,
+                observed_by_template[second], 0,
+                0.0, 1.0, 0.0, 1.0,
+            )
+            for first, second in template_pairs
+        )
+        template_directions = tuple(
+            tuple((_rigid(target_rotation)[:2, :2] @ np.asarray(direction)).tolist())
+            for direction in ((-1.0, -1.0), (1.0, -1.0), (-1.0, 0.0), (1.0, 1.0))
+        )
+        placement_directions = [None] * 4
+        placement_references = [None] * 4
+        for observed_index, template_index in enumerate(result.assignment):
+            placement_directions[observed_index] = template_directions[template_index]
+            placement_references[observed_index] = _apply(
+                template.pieces[template_index], target_pose
+            )
+        return AssemblyPlan(
+            roi=tuple(int(value) for value in roi),
+            split_y_mm=float(split_y),
+            target_rect_mm=(
+                float(target_origin[0]), float(target_origin[1]),
+                float(target_width), float(target_height),
+            ),
+            transforms=transforms,
+            matches=matches,
+            score=float(result.score),
+            recovered_size_mm=(float(target_width), float(target_height)),
+            rectangle_fill_ratio=float(rectangle_fill_ratio),
+            union_convexity_ratio=float(union_convexity_ratio),
+            hull_rectangle_ratio=float(hull_rectangle_ratio),
+            overlap_ratio=float(overlap_ratio),
+            dimension_error_ratio=0.0,
+            upper_piece_ids=tuple(range(4)),
+            placement_offset_directions=tuple(placement_directions),
+            placement_reference_polygons=tuple(placement_references),
+            enforce_corresponding_vertex_limit=False,
+        )
+    except (OSError, KeyError, json.JSONDecodeError, RuntimeError, ValueError):
+        return solve_assembly(
+            polygons,
+            roi,
+            cfg,
+            require_upper_half=require_upper_half,
+            prefer_fixed_card_shape=True,
+        )
 
 
 def global_pixels_to_a4(

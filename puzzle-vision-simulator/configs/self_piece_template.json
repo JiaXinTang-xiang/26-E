@@ -1,0 +1,24 @@
+{
+  "format": "puzzle-device.self-piece-template.v1",
+  "target_size_mm": [100.0, 60.0],
+  "maximum_total_normalized_error": 0.48,
+  "maximum_piece_normalized_error": 0.24,
+  "pieces": [
+    {
+      "id": "fixed_1",
+      "vertices_mm": [[0.0, 0.0], [20.0, 0.0], [36.0, 12.0], [0.0, 20.0]]
+    },
+    {
+      "id": "fixed_2",
+      "vertices_mm": [[20.0, 0.0], [100.0, 0.0], [100.0, 60.0]]
+    },
+    {
+      "id": "fixed_3",
+      "vertices_mm": [[0.0, 20.0], [36.0, 12.0], [76.0, 42.0], [0.0, 30.0]]
+    },
+    {
+      "id": "fixed_4",
+      "vertices_mm": [[0.0, 30.0], [76.0, 42.0], [100.0, 60.0], [0.0, 60.0]]
+    }
+  ]
+}

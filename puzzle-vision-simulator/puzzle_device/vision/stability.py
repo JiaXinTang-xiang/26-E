@@ -30,15 +30,35 @@ def _mean_axis_angle(values: list[float]) -> float:
     return (angle + 90.0) % 180.0 - 90.0
 
 
+def _align_polygon(reference: np.ndarray, polygon: np.ndarray) -> np.ndarray:
+    """Return the cyclic vertex order closest to a reference polygon."""
+    reference = np.asarray(reference, dtype=np.float64)
+    polygon = np.asarray(polygon, dtype=np.float64)
+    candidates = [np.roll(polygon, shift, axis=0) for shift in range(len(polygon))]
+    reversed_polygon = polygon[::-1]
+    candidates.extend(
+        np.roll(reversed_polygon, shift, axis=0) for shift in range(len(polygon))
+    )
+    return min(candidates, key=lambda value: float(np.square(value - reference).sum()))
+
+
+def _longest_edge_angle(polygon: np.ndarray) -> float:
+    vectors = np.roll(polygon, -1, axis=0) - polygon
+    edge = vectors[int(np.argmax(np.linalg.norm(vectors, axis=1)))]
+    angle = math.degrees(math.atan2(edge[1], edge[0]))
+    return (angle + 90.0) % 180.0 - 90.0
+
+
 class PieceStabilityTracker:
     """Track up to four stationary pieces across consecutive detection frames."""
 
     def __init__(
         self,
-        required_frames: int = 8,
+        required_frames: int = 4,
         center_tolerance_px: float = 4.0,
         angle_tolerance_deg: float = 4.0,
         area_tolerance_ratio: float = 0.08,
+        polygon_tolerance_px: float = 5.0,
     ) -> None:
         if required_frames < 2:
             raise ValueError("required_frames must be at least two")
@@ -46,6 +66,7 @@ class PieceStabilityTracker:
         self.center_tolerance_px = center_tolerance_px
         self.angle_tolerance_deg = angle_tolerance_deg
         self.area_tolerance_ratio = area_tolerance_ratio
+        self.polygon_tolerance_px = polygon_tolerance_px
         self._history: deque[list[PieceObservation]] = deque(maxlen=required_frames)
         self.status = StabilityStatus(0, required_frames, False, "等待识别")
 
@@ -111,6 +132,18 @@ class PieceStabilityTracker:
             center_deviation = np.linalg.norm(centers - centers.mean(axis=0), axis=1).max()
             if center_deviation > self.center_tolerance_px:
                 return f"P{index} 中心波动 {center_deviation:.1f}px"
+            reference = np.asarray(samples[0].polygon, dtype=np.float64)
+            polygons = np.asarray([
+                _align_polygon(reference, piece.polygon) for piece in samples
+            ])
+            # Remove whole-piece translation before measuring shape jitter.
+            centered_polygons = polygons - centers[:, None, :]
+            median_polygon = np.median(centered_polygons, axis=0)
+            vertex_deviation = np.linalg.norm(
+                centered_polygons - median_polygon[None, :, :], axis=2
+            ).max()
+            if vertex_deviation > self.polygon_tolerance_px:
+                return f"P{index} 顶点波动 {vertex_deviation:.1f}px"
             areas = np.asarray([piece.area_px for piece in samples], dtype=np.float64)
             relative_area_range = float(np.ptp(areas) / max(areas.mean(), 1.0))
             if relative_area_range > self.area_tolerance_ratio:
@@ -131,16 +164,27 @@ class PieceStabilityTracker:
             latest = samples[-1]
             centers = np.asarray([piece.center for piece in samples], dtype=np.float64)
             picks = np.asarray([piece.pick_point for piece in samples], dtype=np.float64)
+            reference = np.asarray(samples[0].polygon, dtype=np.float64)
+            polygons = np.asarray([
+                _align_polygon(reference, piece.polygon) for piece in samples
+            ])
+            polygon = np.median(polygons, axis=0)
+            minimum = np.floor(polygon.min(axis=0)).astype(int)
+            maximum = np.ceil(polygon.max(axis=0)).astype(int)
             averaged.append(replace(
                 latest,
                 piece_id=index,
+                contour=np.round(polygon).astype(np.int32).reshape(-1, 1, 2),
+                polygon=polygon,
                 center=tuple(centers.mean(axis=0)),
                 pick_point=tuple(picks.mean(axis=0)),
                 pick_clearance_px=float(np.mean([piece.pick_clearance_px for piece in samples])),
                 area_px=float(np.mean([piece.area_px for piece in samples])),
                 pca_angle_deg=_mean_axis_angle([piece.pca_angle_deg for piece in samples]),
-                longest_edge_angle_deg=_mean_axis_angle(
-                    [piece.longest_edge_angle_deg for piece in samples]
+                longest_edge_angle_deg=_longest_edge_angle(polygon),
+                bounding_box=(
+                    int(minimum[0]), int(minimum[1]),
+                    int(maximum[0] - minimum[0]), int(maximum[1] - minimum[1]),
                 ),
                 confidence=float(np.mean([piece.confidence for piece in samples])),
             ))

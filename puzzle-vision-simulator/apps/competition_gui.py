@@ -432,7 +432,7 @@ class CompetitionApp(PuzzleControlApp):
             self.status.set("只识别4块并放到下半区4个固定点，不调用拼接算法。")
         elif mode.planning_method == "self_assembly":
             self.plan_state.set("自备拼图：正在稳定识别4块碎片…")
-            self.status.set("优先完整边和100×60、5:3方案；无可靠拼接时自动保底搬运。")
+            self.status.set("优先匹配固定四块100×60模板；失败后尝试通用拼接，再自动保底搬运。")
         elif mode.planning_method == "texture":
             self.plan_state.set("扑克牌：正在稳定识别1～4块碎片…")
             self.status.set("将先筛选可靠矩形方案，再用牌面花纹接缝连续性确定排列。")
@@ -508,7 +508,7 @@ class CompetitionApp(PuzzleControlApp):
                     calibration_file=calibration_name,
                     config=config,
                 )
-                document["planning_method"] = "self_fixed_shape_preference"
+                document["planning_method"] = "self_fixed_template_or_general"
                 preview = draw_assembly_preview(
                     draw_piece_observations(frame, pieces), pieces, assembly, config
                 )

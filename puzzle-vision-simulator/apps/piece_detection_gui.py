@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import cv2
 import numpy as np
@@ -25,6 +25,7 @@ from puzzle_device.planning import (
     target_rectangle_pixels,
 )
 from puzzle_device.vision.camera import open_uvc_camera
+from puzzle_device.vision.case_replay import load_vision_case, save_vision_case
 from puzzle_device.vision.piece_vision import (
     DetectionConfig,
     detect_piece_observations,
@@ -47,6 +48,7 @@ ROI_PATH = Path("configs/local/a4_roi.json")
 LOCKED_RESULT_PATH = Path("output/locked_piece_observations.json")
 ASSEMBLY_PLAN_PATH = Path("output/assembly_plan.json")
 ASSEMBLY_PREVIEW_PATH = Path("output/assembly_preview.png")
+REAL_CASES_PATH = Path("data/real_cases")
 
 
 class PieceDetectionApp:
@@ -61,6 +63,8 @@ class PieceDetectionApp:
         self.rotate_180 = rotate_180
         self.capture: cv2.VideoCapture | None = None
         self.current_frame: np.ndarray | None = None
+        self.replay_active = False
+        self.replay_path: Path | None = None
         self.background: np.ndarray | None = None
         self.photo_main = None
         self.photo_mask = None
@@ -217,6 +221,14 @@ class PieceDetectionApp:
         )
         ttk.Label(capture, textvariable=self.background_state, wraplength=365,
                   foreground="#155e75", justify="left").pack(fill="x", pady=(7, 0))
+        case_buttons = ttk.Frame(capture)
+        case_buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(case_buttons, text="保存当前案例", command=self._save_current_case).pack(
+            side="left", fill="x", expand=True)
+        ttk.Button(case_buttons, text="加载案例回放", command=self._load_case_replay).pack(
+            side="left", fill="x", expand=True, padx=(7, 0))
+        ttk.Button(capture, text="返回实时相机", command=self._return_to_live_camera).pack(
+            fill="x", pady=(6, 0))
 
         parameter_box = ttk.LabelFrame(controls, text="识别参数", padding=7)
         parameter_box.pack(fill="x", pady=(9, 0))
@@ -385,7 +397,7 @@ class PieceDetectionApp:
         return config
 
     def _update(self) -> None:
-        if self.capture is not None:
+        if self.capture is not None and not self.replay_active:
             ok, frame = self.capture.read()
             if ok:
                 if self.rotate_180:
@@ -394,6 +406,89 @@ class PieceDetectionApp:
         self._collect_analysis_result()
         self._queue_analysis()
         self.root.after(30, self._update)
+
+    def _save_current_case(self) -> None:
+        if self.current_frame is None:
+            messagebox.showwarning("没有画面", "当前没有可以保存的图像。")
+            return
+        config = self._config()
+        if config is None:
+            messagebox.showerror("参数无效", "请先修正识别参数。")
+            return
+        try:
+            case_path = save_vision_case(
+                REAL_CASES_PATH,
+                self.current_frame,
+                self.background,
+                config,
+                self.roi,
+                pieces=self.latest_pieces,
+                mask=None if not hasattr(self, "mask_image") else self.mask_image,
+                overlay=None if not hasattr(self, "overlay") else self.overlay,
+                edges=None if not hasattr(self, "edge_image") else self.edge_image,
+            )
+        except (OSError, ValueError, cv2.error) as exc:
+            messagebox.showerror("保存案例失败", str(exc))
+            return
+        self.status.set(f"当前案例已保存：{case_path}。可在没有相机时重复回放调试。")
+
+    def _load_case_replay(self) -> None:
+        REAL_CASES_PATH.mkdir(parents=True, exist_ok=True)
+        selected = filedialog.askdirectory(
+            title="选择包含 case.json 的案例目录",
+            initialdir=str(REAL_CASES_PATH.resolve()),
+        )
+        if not selected:
+            return
+        try:
+            case = load_vision_case(Path(selected))
+        except (OSError, KeyError, json.JSONDecodeError, ValueError) as exc:
+            messagebox.showerror("加载案例失败", str(exc))
+            return
+        self.replay_active = True
+        self.replay_path = case.path
+        self.current_frame = case.frame
+        self.background = case.background
+        self.roi = case.roi
+        self._apply_config(case.config)
+        self.results_locked = False
+        self.analysis_paused = False
+        self.locked_pieces = []
+        self.pause_button.configure(text="暂停识别")
+        self._invalidate_assembly("已加载回放案例")
+        self._reset_stability("案例已加载，重新稳定采样")
+        if self.roi is None:
+            self.roi_state.set("A4 ROI：案例未保存 ROI，当前识别整张画面")
+        else:
+            x, y, width, height = self.roi
+            self.roi_state.set(f"A4 ROI：案例 x={x}, y={y}, w={width}, h={height}")
+        self.background_state.set(
+            "背景：案例未包含背景" if self.background is None else "背景：使用案例背景图"
+        )
+        self.status.set(f"正在离线回放：{case.path}。参数修改后会立即重新识别同一张原图。")
+        self._detect_and_show()
+
+    def _return_to_live_camera(self) -> None:
+        if not self.replay_active:
+            self.status.set("当前已经是实时相机模式。")
+            return
+        self.replay_active = False
+        self.replay_path = None
+        self.background = None
+        self.roi = None
+        self.background_state.set("背景：未采集（当前使用边缘颜色估计）")
+        self.roi_state.set("A4 ROI：未设置，当前识别整张画面")
+        self._load_saved_background()
+        self._load_roi()
+        self._apply_config(self._initial_config())
+        self.results_locked = False
+        self.analysis_paused = False
+        self.locked_pieces = []
+        self.pause_button.configure(text="暂停识别")
+        self._invalidate_assembly("已返回实时相机")
+        self._reset_stability("已返回实时相机，重新稳定采样")
+        self.status.set("已返回实时相机，正在采集新画面。")
+        self._detect_and_show()
 
     def _detect_and_show(self) -> None:
         """Request a fresh result without blocking Tk's event loop."""
@@ -956,6 +1051,12 @@ class PieceDetectionApp:
         except (json.JSONDecodeError, OSError, ValueError) as exc:
             messagebox.showerror("恢复失败", f"无法读取上次保存的参数：{exc}")
             return
+        self._apply_config(config)
+        self.status.set(f"已恢复上次保存的视觉参数：{LOCAL_CONFIG_PATH}。")
+        self._reset_stability("参数已恢复，重新稳定采样")
+        self._detect_and_show()
+
+    def _apply_config(self, config: DetectionConfig) -> None:
         labels_by_method = {value: label for label, value in self.method_values.items()}
         self.segmentation_method.set(labels_by_method[config.segmentation_method])
         self.min_area.set(f"{config.min_area_px:g}")
@@ -978,9 +1079,6 @@ class PieceDetectionApp:
         self.min_vertices.set(str(config.min_vertices))
         self.max_vertices.set(str(config.max_vertices))
         self.minimum_pick_clearance.set(f"{config.minimum_pick_clearance_px:g}")
-        self.status.set(f"已恢复上次保存的视觉参数：{LOCAL_CONFIG_PATH}。")
-        self._reset_stability("参数已恢复，重新稳定采样")
-        self._detect_and_show()
 
     def _load_saved_background(self) -> None:
         if not BACKGROUND_PATH.exists():

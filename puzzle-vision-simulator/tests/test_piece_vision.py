@@ -3,6 +3,7 @@
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -14,6 +15,7 @@ from puzzle_device.vision.piece_vision import (
     extract_piece_edges,
     load_detection_config,
     save_detection_config,
+    _polygon_from_contour,
 )
 
 
@@ -156,6 +158,31 @@ class PieceVisionTest(unittest.TestCase):
         edges = extract_piece_edges(mask)
         self.assertGreater(np.count_nonzero(edges), 0)
         self.assertEqual(np.count_nonzero(edges[60:140, 70:190]), 0)
+
+    def test_polygon_search_scores_all_epsilon_candidates(self):
+        contour = np.array(
+            [[0, 0], [100, 0], [100, 60], [0, 60]], np.int32
+        ).reshape(-1, 1, 2)
+        poor = np.array([[0, 0], [100, 0], [100, 60], [52, 58], [0, 60]], np.int32)
+        good = np.array([[0, 0], [100, 0], [100, 60], [0, 60]], np.int32)
+        calls = 0
+
+        def approximations(_contour, _epsilon, _closed):
+            nonlocal calls
+            calls += 1
+            return (poor if calls == 1 else good).reshape(-1, 1, 2)
+
+        config = DetectionConfig(
+            polygon_epsilon_min=0.01,
+            polygon_epsilon_preferred=0.01,
+            polygon_epsilon_max=0.03,
+            polygon_epsilon_steps=3,
+        )
+        with patch("puzzle_device.vision.piece_vision.cv2.approxPolyDP",
+                   side_effect=approximations):
+            polygon = _polygon_from_contour(contour, config)
+        self.assertEqual(calls, 3)
+        self.assertEqual(len(polygon), 4)
 
 
 if __name__ == "__main__":

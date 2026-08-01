@@ -246,14 +246,55 @@ def _polygon_from_contour(
         config.polygon_epsilon_max,
         config.polygon_epsilon_steps,
     )
+    valid = []
+    contour_area = abs(float(cv2.contourArea(contour)))
+    minimum_edge = max(
+        config.min_edge_length_px,
+        config.min_edge_length_ratio * perimeter,
+    )
+    seen = set()
     ratios = sorted(candidates, key=lambda value: abs(value - preferred))
     for ratio in ratios:
         approx = cv2.approxPolyDP(contour, ratio * perimeter, True).reshape(-1, 2)
         approx = _remove_tiny_edges(approx.astype(np.float64), perimeter, config)
         count = len(approx)
-        if config.min_vertices <= count <= config.max_vertices:
-            return order_clockwise(approx)
-    return None
+        if not config.min_vertices <= count <= config.max_vertices:
+            continue
+        ordered = order_clockwise(approx)
+        signature = tuple(np.round(ordered, 2).reshape(-1))
+        if signature in seen:
+            continue
+        seen.add(signature)
+
+        polygon_area = abs(float(cv2.contourArea(ordered.astype(np.float32))))
+        area_error = abs(polygon_area - contour_area) / max(contour_area, 1.0)
+        edges = np.roll(ordered, -1, axis=0) - ordered
+        lengths = np.linalg.norm(edges, axis=1)
+        short_edge_penalty = max(0.0, minimum_edge * 1.5 - float(lengths.min()))
+        short_edge_penalty /= max(minimum_edge * 1.5, 1.0)
+
+        previous = np.roll(ordered, 1, axis=0) - ordered
+        following = np.roll(ordered, -1, axis=0) - ordered
+        cosine = np.sum(previous * following, axis=1) / np.maximum(
+            np.linalg.norm(previous, axis=1) * np.linalg.norm(following, axis=1), 1e-9
+        )
+        turn_angles = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+        collinear_penalty = max(0.0, float(turn_angles.max()) - 168.0) / 12.0
+        preferred_penalty = abs(ratio - preferred) / max(
+            config.polygon_epsilon_max - config.polygon_epsilon_min, 1e-9
+        )
+        score = (
+            5.0 * area_error
+            + 2.0 * short_edge_penalty
+            + 1.5 * collinear_penalty
+            + 0.08 * preferred_penalty
+        )
+        valid.append((score, area_error, preferred_penalty, ordered))
+
+    if not valid:
+        return None
+    # Compare every valid epsilon instead of accepting the first 3-5 vertex result.
+    return min(valid, key=lambda item: item[:3])[3]
 
 
 def _remove_tiny_edges(
