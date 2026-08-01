@@ -2,6 +2,7 @@
 
 import unittest
 
+import cv2
 import numpy as np
 
 from puzzle_device.planning import (
@@ -11,6 +12,8 @@ from puzzle_device.planning import (
     solve_assembly,
 )
 from puzzle_device.planning.assembly import (
+    _choose_candidate,
+    _texture_seam_scores,
     a4_to_global_pixels,
     transform_global_points,
 )
@@ -31,6 +34,69 @@ def _place(polygons, config):
 
 
 class AssemblyTest(unittest.TestCase):
+    def test_self_mode_prefers_original_100_by_60_shape_without_rejecting(self):
+        config = AssemblyConfig()
+        identity = np.eye(3)
+        full_matches = ((0.01, 0, 0, 1, 0, 0.0, 1.0, 0.0, 1.0),)
+        skinny = (8.0, (identity, identity), (), (105.0, 49.0),
+                  0.9, 0.95, 0.9, 0.0, 0.0, full_matches)
+        original_shape = (12.0, (identity, identity), (), (100.0, 60.0),
+                          0.9, 0.95, 0.9, 0.0, 0.0, full_matches)
+        selected, _texture, _seams = _choose_candidate(
+            [skinny, original_shape],
+            [np.zeros((4, 2)), np.zeros((4, 2))],
+            ROI,
+            config,
+            None,
+            prefer_fixed_card_shape=True,
+        )
+        self.assertEqual(selected[3], (100.0, 60.0))
+
+    def test_full_edge_candidate_is_preferred_over_partial_edge(self):
+        config = AssemblyConfig()
+        identity = np.eye(3)
+        full = ((0.05, 0, 0, 1, 0, 0.0, 1.0, 0.0, 1.0),)
+        partial = ((0.01, 0, 0, 1, 0, 0.0, 0.6, 0.0, 1.0),)
+        full_candidate = (10.0, (identity, identity), (), (100.0, 60.0),
+                          0.9, 0.95, 0.9, 0.0, 0.0, full)
+        partial_candidate = (1.0, (identity, identity), (), (100.0, 60.0),
+                             0.9, 0.95, 0.9, 0.0, 0.0, partial)
+        selected, _texture, _seams = _choose_candidate(
+            [partial_candidate, full_candidate],
+            [np.zeros((4, 2)), np.zeros((4, 2))],
+            ROI,
+            config,
+            None,
+            prefer_fixed_card_shape=False,
+        )
+        self.assertIs(selected, full_candidate)
+
+    def test_card_texture_prefers_continuous_seam_direction(self):
+        config = AssemblyConfig()
+        image = np.full((720, 1280, 3), 230, np.uint8)
+        polygons = [
+            np.array([[10, 10], [60, 10], [60, 70], [10, 70]], float),
+            np.array([[80, 10], [130, 10], [130, 70], [80, 70]], float),
+        ]
+        # Give both source edges the same asymmetric printed pattern from top
+        # to bottom. Reversing one edge must therefore produce a worse seam.
+        for y_mm in np.linspace(10, 70, 121):
+            color = int(30 + (y_mm - 10) / 60 * 190)
+            for x_mm in (57.5, 82.5):
+                x_px, y_px = a4_to_global_pixels(
+                    np.array([[x_mm, y_mm]], float), ROI, config
+                )[0].astype(int)
+                cv2.circle(image, (x_px, y_px), 5, (color, color, color), -1)
+        continuous = ((0.0, 0, 1, 1, 3, 0.0, 1.0, 0.0, 1.0),)
+        reversed_pattern = ((0.0, 0, 1, 1, 1, 0.0, 1.0, 0.0, 1.0),)
+        continuous_score = _texture_seam_scores(
+            image, polygons, continuous, ROI, config
+        )[0]
+        reversed_score = _texture_seam_scores(
+            image, polygons, reversed_pattern, ROI, config
+        )[0]
+        self.assertLess(continuous_score, reversed_score * 0.45)
+
     def test_non_rectangular_arrangement_is_rejected(self):
         config = AssemblyConfig()
         polygons = [a4_to_global_pixels(
@@ -39,14 +105,48 @@ class AssemblyTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             solve_assembly(polygons, ROI, config, require_upper_half=False)
 
-    def test_oversized_rectangle_is_accepted(self):
+    def test_120_by_72_rectangle_is_accepted_and_becomes_target(self):
         config = AssemblyConfig()
         polygon = a4_to_global_pixels(
             np.array([[0, 0], [120, 0], [120, 72], [0, 72]], float), ROI, config
         )
         plan = solve_assembly([polygon], ROI, config, require_upper_half=False)
         self.assertTrue(np.allclose(plan.recovered_size_mm, [120, 72], atol=0.1))
+        self.assertTrue(np.allclose(plan.target_rect_mm[2:], [120, 72], atol=0.1))
         self.assertAlmostEqual(plan.rectangle_fill_ratio, 1.0, places=5)
+
+    def test_non_five_to_three_rectangle_is_accepted(self):
+        config = AssemblyConfig()
+        polygon = a4_to_global_pixels(
+            np.array([[0, 0], [90, 0], [90, 80], [0, 80]], float), ROI, config
+        )
+        plan = solve_assembly([polygon], ROI, config, require_upper_half=False)
+        self.assertTrue(np.allclose(plan.recovered_size_mm, [90, 80], atol=0.1))
+        self.assertTrue(np.allclose(plan.target_rect_mm[2:], [90, 80], atol=0.1))
+
+    def test_width_outside_task_range_is_rejected(self):
+        config = AssemblyConfig()
+        polygon = a4_to_global_pixels(
+            np.array([[0, 0], [130, 0], [130, 70], [0, 70]], float), ROI, config
+        )
+        with self.assertRaisesRegex(RuntimeError, "尺寸范围"):
+            solve_assembly([polygon], ROI, config, require_upper_half=False)
+
+    def test_height_outside_task_range_is_rejected(self):
+        config = AssemblyConfig()
+        polygon = a4_to_global_pixels(
+            np.array([[0, 0], [100, 0], [100, 95], [0, 95]], float), ROI, config
+        )
+        with self.assertRaisesRegex(RuntimeError, "尺寸范围"):
+            solve_assembly([polygon], ROI, config, require_upper_half=False)
+
+    def test_visual_size_tolerance_accepts_small_measurement_error(self):
+        config = AssemblyConfig()
+        polygon = a4_to_global_pixels(
+            np.array([[0, 0], [88.1, 0], [88.1, 58.6], [0, 58.6]], float), ROI, config
+        )
+        plan = solve_assembly([polygon], ROI, config, require_upper_half=False)
+        self.assertTrue(np.allclose(plan.recovered_size_mm, [88.1, 58.6], atol=0.1))
 
     def test_random_common_cuts_recover_target_rectangle(self):
         config = AssemblyConfig()
@@ -135,6 +235,14 @@ class AssemblyTest(unittest.TestCase):
         self.assertIsNotNone(record["source_pick_pulse"])
         self.assertIsNotNone(record["target_pick_pulse"])
         self.assertIn("rotation_deg", record)
+        self.assertTrue(np.allclose(
+            document["target_rect"]["size_mm"], assembly.recovered_size_mm, atol=0.01
+        ))
+        self.assertEqual(
+            document["quality"]["target_size_range_mm"],
+            {"width": [90.0, 120.0], "height": [50.0, 90.0]},
+        )
+        self.assertTrue(document["quality"]["recovered_size_in_range"])
 
     def test_execution_gap_separates_neighbours_without_changing_rotation(self):
         config = AssemblyConfig(placement_gap_mm=5.0)

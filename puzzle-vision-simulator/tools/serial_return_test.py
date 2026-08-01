@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from puzzle_device.calibration.gantry_protocol import build_pick_and_place_frame
+from puzzle_device.calibration.gantry_protocol import build_serial_health_check_frame
 
 
 EXPECTED_REJECT = bytes.fromhex("AA 03 B2 B1 55")
@@ -49,9 +49,7 @@ def main() -> int:
     else:
         # Corrupt only the checksum. The controller must reject this frame
         # before any coordinates are used, so it cannot start a motor action.
-        invalid_frame = bytearray(build_pick_and_place_frame(0, 0, 0, 0))
-        invalid_frame[-2] ^= 0xFF
-        frame = bytes(invalid_frame)
+        frame = build_serial_health_check_frame()
         expected = EXPECTED_REJECT
 
     with serial.Serial(

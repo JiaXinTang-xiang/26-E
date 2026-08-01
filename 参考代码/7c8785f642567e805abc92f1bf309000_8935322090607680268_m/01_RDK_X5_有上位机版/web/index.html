@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>A4 拼图视觉上位机</title>
+  <style>
+    :root {
+      color-scheme:dark;
+      --bg:#09101a; --panel:#111b29; --line:#25364b; --text:#edf5ff;
+      --muted:#91a5bd; --green:#42ef70; --orange:#ffc13d;
+      --cyan:#36d7ff; --magenta:#eb59f0; --red:#ff6370;
+    }
+    * { box-sizing:border-box; }
+    html,body { width:100%; height:100%; overflow:hidden; }
+    body {
+      margin:0; color:var(--text);
+      background:radial-gradient(circle at 10% 0%,#172a42 0,var(--bg) 36%);
+      font:13px/1.35 "Segoe UI","Microsoft YaHei",sans-serif;
+    }
+    header {
+      height:48px; padding:0 14px; display:flex; align-items:center;
+      justify-content:space-between; gap:12px; border-bottom:1px solid var(--line);
+      background:rgba(8,14,23,.92);
+    }
+    h1 { margin:0; font-size:17px; white-space:nowrap; }
+    .status-pill {
+      min-width:0; display:flex; align-items:center; gap:7px;
+      color:var(--muted); border:1px solid var(--line);
+      border-radius:999px; padding:5px 10px;
+    }
+    .dot { flex:0 0 auto; width:8px; height:8px; border-radius:50%; background:var(--red); }
+    .dot.ok { background:var(--green); box-shadow:0 0 12px var(--green); }
+    main {
+      height:calc(100vh - 48px); min-height:0; padding:8px;
+      display:grid; grid-template-columns:minmax(0,1fr) 330px; gap:8px;
+    }
+    .viewer,.card {
+      border:1px solid var(--line); border-radius:11px;
+      background:linear-gradient(145deg,rgba(20,30,44,.97),rgba(11,18,28,.97));
+      box-shadow:0 14px 38px rgba(0,0,0,.24);
+    }
+    .viewer {
+      min-width:0; min-height:0; width:100%; height:100%;
+      overflow:hidden; position:relative; display:flex;
+      align-items:center; justify-content:center;
+    }
+    .viewer img {
+      display:block; width:auto; height:auto;
+      max-width:100%; max-height:100%; object-fit:contain;
+    }
+    .viewer.zoom { overflow:auto; align-items:flex-start; justify-content:flex-start; }
+    .viewer.zoom img { max-width:none; max-height:none; }
+    .view-tools {
+      position:absolute; top:9px; right:9px; display:flex; gap:6px;
+      padding:5px; border-radius:8px; background:rgba(5,10,17,.76);
+    }
+    .legend {
+      position:absolute; left:10px; bottom:10px; max-width:calc(100% - 20px);
+      display:flex; flex-wrap:wrap; gap:7px; padding:6px 8px;
+      border-radius:8px; background:rgba(5,10,17,.76);
+    }
+    .legend span::before {
+      content:""; display:inline-block; width:8px; height:8px;
+      margin-right:4px; border-radius:2px; background:var(--c);
+    }
+    aside { min-height:0; display:flex; flex-direction:column; gap:7px; overflow:auto; }
+    .card { padding:9px; }
+    .card h2 { margin:0 0 7px; font-size:13px; color:#c4d8ef; }
+    .controls { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    label { display:grid; gap:4px; color:var(--muted); font-size:11px; }
+    select,input[type="file"],input[type="number"] {
+      width:100%; min-width:0; border:1px solid var(--line);
+      border-radius:7px; padding:6px; color:var(--text); background:#0b1421;
+    }
+    input[type="color"] {
+      width:100%; height:29px; padding:2px; border:1px solid var(--line);
+      border-radius:7px; background:#0b1421;
+    }
+    .wide { grid-column:1/-1; }
+    .toggle {
+      grid-column:1/-1; display:flex; align-items:center; gap:7px;
+      color:var(--text); padding:2px 0;
+    }
+    .help { grid-column:1/-1; color:var(--muted); font-size:11px; margin:0; }
+    .button-row { grid-column:1/-1; display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .tuning-groups { display:grid; gap:7px; }
+    .tuning-group {
+      display:grid; grid-template-columns:1fr 1fr; gap:6px;
+      padding:7px; border:1px solid var(--line); border-radius:8px;
+      background:rgba(6,13,22,.45);
+    }
+    .tuning-group h3 {
+      grid-column:1/-1; margin:0; font-size:11px; color:#9fc6ef;
+    }
+    .setting-note { margin:0 0 7px; color:var(--muted); font-size:11px; line-height:1.45; }
+    .setting-message { min-height:16px; margin-top:6px; font-size:11px; color:var(--green); }
+    .setting-message.bad { color:#ff9ca5; }
+    button {
+      border:1px solid #365476; border-radius:7px; padding:6px 7px;
+      background:#173653; color:var(--text); cursor:pointer; font-weight:600;
+    }
+    button.secondary { background:#0b1421; color:#c5d9ef; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; }
+    .metric { min-width:0; padding:6px; border-radius:7px; background:#0a1320; }
+    .metric small { color:var(--muted); }
+    .metric b { display:block; margin-top:1px; font-size:13px; overflow-wrap:anywhere; }
+    .error {
+      display:none; padding:8px 9px; border-left:3px solid var(--red);
+      border-radius:7px; color:#ffb5bb; background:#2b141b; overflow-wrap:anywhere;
+    }
+    table { width:100%; border-collapse:collapse; font-size:11px; }
+    th,td { text-align:left; padding:5px 3px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-weight:500; }
+    td.angle { color:var(--magenta); font-weight:700; }
+    .empty { color:var(--muted); padding:6px 0; }
+    @media (max-width:900px) {
+      html,body { overflow:auto; }
+      main { height:auto; grid-template-columns:1fr; }
+      .viewer { height:min(56vh,520px); min-height:280px; }
+      aside { overflow:visible; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>A4 拼图视觉上位机</h1>
+    <div class="status-pill"><i id="dot" class="dot"></i><span id="statusText">正在连接</span></div>
+  </header>
+  <main>
+    <section id="viewer" class="viewer">
+      <img id="cameraView" src="/stream.mjpg?v=3" alt="实时视觉画面">
+      <div class="view-tools">
+        <button id="fitView" type="button">完整画面</button>
+        <button id="actualView" class="secondary" type="button">1:1</button>
+      </div>
+      <div class="legend">
+        <span style="--c:var(--green)">A4</span>
+        <span style="--c:var(--orange)">分界线</span>
+        <span style="--c:var(--cyan)">每块同色对应源/目标</span>
+        <span style="--c:var(--magenta)">目标矩形</span>
+      </div>
+    </section>
+    <aside>
+      <section class="card">
+        <h2>运行设置</h2>
+        <div class="controls">
+          <label class="wide">识别方式
+            <select id="mode">
+              <option value="fixed">基础识别｜题图固定四片</option>
+              <option value="unknown-white" selected>提高识别｜自主拼接（纯色）</option>
+              <option value="unknown-pattern">提高识别｜自主拼接（花纹）</option>
+            </select>
+          </label>
+          <p id="modeHelp" class="help"></p>
+          <p class="help">提高模式支持 1～4 块；只允许平移和旋转，禁止镜像翻面。</p>
+          <label class="wide">碎片所在区域
+            <select id="sourceRegion">
+              <option value="upper" selected>上半区（比赛默认）</option>
+              <option value="lower">下半区（调试）</option>
+              <option value="auto">自动判断</option>
+            </select>
+          </label>
+          <label class="toggle"><input id="useColorHints" type="checkbox"> 优先按指定颜色寻找</label>
+          <label>A4 底纸颜色<input id="paperColor" type="color" value="#00a8bd"></label>
+          <label>碎片颜色<input id="pieceColor" type="color" value="#f4f4ee"></label>
+          <label class="wide">上传图片识别（JPG/PNG/BMP，最大 25 MB）
+            <input id="imageFile" type="file" accept="image/jpeg,image/png,image/bmp">
+          </label>
+          <div class="button-row">
+            <button id="analyzeImage" type="button">识别选中图片</button>
+            <button id="resumeCamera" class="secondary" type="button">恢复实时摄像头</button>
+          </div>
+          <div class="button-row">
+            <button id="resetTarget" class="secondary" type="button">重新选择下方拼法</button>
+          </div>
+          <div class="button-row">
+            <button id="downloadMotionJson" type="button" disabled>机械臂 JSON</button>
+            <button id="downloadMotionCsv" class="secondary" type="button" disabled>机械臂 CSV</button>
+          </div>
+        </div>
+      </section>
+      <section id="whiteSettingsPanel" class="card" hidden>
+        <h2>普通白片识别参数</h2>
+        <p class="setting-note">仅对“纯色”提高模式生效。可调目标尺寸、单片面积、环境光/综合色差、颜色提示容差、直边拟合和求解时间；基础题模板不受影响。</p>
+        <div id="whiteSettingsFields" class="tuning-groups"></div>
+        <div class="button-row" style="margin-top:7px">
+          <button id="applyWhiteSettings" type="button">应用并保存</button>
+          <button id="resetWhiteSettings" class="secondary" type="button">恢复启动默认值</button>
+        </div>
+        <div id="whiteSettingsMessage" class="setting-message"></div>
+      </section>
+      <section id="cardSettingsPanel" class="card" hidden>
+        <h2>扑克牌识别参数</h2>
+        <p class="setting-note">仅对“花纹”模式生效。尺寸用于限制竖向整牌；同形碎片优先比较花纹强度、颜色及沿边变化，反光无花纹时自动退回轮廓。</p>
+        <div id="cardSettingsFields" class="tuning-groups"></div>
+        <div class="button-row" style="margin-top:7px">
+          <button id="applyCardSettings" type="button">应用并保存</button>
+          <button id="resetCardSettings" class="secondary" type="button">恢复启动默认值</button>
+        </div>
+        <div id="cardSettingsMessage" class="setting-message"></div>
+      </section>
+      <div id="error" class="error"></div>
+      <section class="card">
+        <h2>实时状态</h2>
+        <div class="metrics">
+          <div class="metric"><small>摄像头</small><b id="fps">--</b></div>
+          <div class="metric"><small>单次视觉</small><b id="analysis">--</b></div>
+          <div class="metric"><small>解算状态</small><b id="lockState">--</b></div>
+          <div class="metric"><small>解算方法</small><b id="solverMethod">--</b></div>
+          <div class="metric"><small>碎片数量</small><b id="pieces">--</b></div>
+          <div class="metric"><small>源 → 目标</small><b id="route">--</b></div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>A4 与拼接质量</h2>
+        <div class="metrics">
+          <div class="metric"><small>分界线位置</small><b id="divider">--</b></div>
+          <div class="metric"><small>分界线测宽</small><b id="dividerWidth">--</b></div>
+          <div class="metric"><small>目标尺寸</small><b id="targetSize">--</b></div>
+          <div class="metric"><small>矩形填充率</small><b id="fillRatio">--</b></div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>机械臂动作（A4 毫米坐标）</h2>
+        <div id="empty" class="empty">等待识别结果</div>
+        <table id="poseTable" hidden>
+          <thead><tr><th>碎片</th><th>吸取</th><th>放置</th><th>旋转</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </aside>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    const mode = $("mode"), sourceRegion = $("sourceRegion");
+    const useColorHints = $("useColorHints"), paperColor = $("paperColor");
+    const pieceColor = $("pieceColor"), imageFile = $("imageFile");
+    const analyzeImage = $("analyzeImage"), resumeCamera = $("resumeCamera");
+    const downloadMotionJson = $("downloadMotionJson");
+    const downloadMotionCsv = $("downloadMotionCsv");
+    const cardSettingsPanel = $("cardSettingsPanel");
+    const cardSettingsFields = $("cardSettingsFields");
+    const applyCardSettings = $("applyCardSettings");
+    const resetCardSettings = $("resetCardSettings");
+    const whiteSettingsPanel = $("whiteSettingsPanel");
+    const whiteSettingsFields = $("whiteSettingsFields");
+    const applyWhiteSettings = $("applyWhiteSettings");
+    const resetWhiteSettings = $("resetWhiteSettings");
+    let applying = false;
+    let settingsDirty = false;
+    let settingsLoaded = false;
+    let settingsTimer = null;
+    let lastSettingsSignature = "";
+    let cardSettingsSchema = {};
+    let cardSettingsLoaded = false;
+    let cardSettingsLoading = false;
+    let whiteSettingsSchema = {};
+    let whiteSettingsLoaded = false;
+    let whiteSettingsLoading = false;
+
+    $("fitView").addEventListener("click", () => $("viewer").classList.remove("zoom"));
+    $("actualView").addEventListener("click", () => $("viewer").classList.add("zoom"));
+
+    function updateModeHelp() {
+      cardSettingsPanel.hidden = mode.value !== "unknown-pattern";
+      whiteSettingsPanel.hidden = mode.value !== "unknown-white";
+      $("modeHelp").textContent = mode.value === "fixed"
+        ? "基础模式：严格匹配题目图 2，目标固定为 100×60 mm。"
+        : mode.value === "unknown-pattern"
+          ? "提高模式：自主搜索矩形，并用花纹连续性辅助选择拼法。"
+          : "提高模式：优先复用已示教拼法，不匹配时自主搜索矩形。";
+    }
+
+    function renderCardSettings(payload) {
+      cardSettingsSchema = payload.schema || {};
+      cardSettingsFields.innerHTML = "";
+      const groups = new Map();
+      for (const [key, spec] of Object.entries(cardSettingsSchema)) {
+        const groupName = spec.group || "其他";
+        if (!groups.has(groupName)) groups.set(groupName, []);
+        groups.get(groupName).push([key, spec]);
+      }
+      for (const [groupName, entries] of groups) {
+        const group = document.createElement("section");
+        group.className = "tuning-group";
+        const title = document.createElement("h3");
+        title.textContent = groupName;
+        group.appendChild(title);
+        for (const [key, spec] of entries) {
+          const label = document.createElement("label");
+          label.textContent = spec.label;
+          const input = document.createElement("input");
+          input.type = "number";
+          input.id = `card-${key}`;
+          input.dataset.cardKey = key;
+          input.min = spec.minimum;
+          input.max = spec.maximum;
+          input.step = spec.step;
+          input.value = payload.values?.[key] ?? payload.defaults?.[key] ?? "";
+          label.appendChild(input);
+          group.appendChild(label);
+        }
+        cardSettingsFields.appendChild(group);
+      }
+      cardSettingsLoaded = true;
+    }
+
+    async function loadCardSettings() {
+      if (cardSettingsLoaded || cardSettingsLoading) return;
+      cardSettingsLoading = true;
+      try {
+        const response = await fetch("/api/card-settings", {cache:"no-store"});
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "读取扑克牌参数失败");
+        renderCardSettings(payload);
+      } finally {
+        cardSettingsLoading = false;
+      }
+    }
+
+    function collectCardSettings() {
+      const values = {};
+      for (const input of cardSettingsFields.querySelectorAll("input[data-card-key]")) {
+        if (!input.checkValidity() || input.value === "") {
+          throw new Error(`${input.parentElement.firstChild.textContent}超出允许范围`);
+        }
+        const spec = cardSettingsSchema[input.dataset.cardKey];
+        values[input.dataset.cardKey] = spec.type === "int"
+          ? Math.round(Number(input.value)) : Number(input.value);
+      }
+      if (values.card_minimum_long_side_mm >= values.card_maximum_long_side_mm)
+        throw new Error("长边最小值必须小于最大值");
+      if (values.card_minimum_short_side_mm >= values.card_maximum_short_side_mm)
+        throw new Error("短边最小值必须小于最大值");
+      if (values.card_rounded_chord_min_mm >= values.card_rounded_chord_max_mm)
+        throw new Error("圆角弦最小值必须小于最大值");
+      if (values.card_exact_search_seconds > values.card_search_seconds)
+        throw new Error("精确边搜索时限不能大于总搜索时限");
+      return values;
+    }
+
+    async function saveCardSettings(reset = false) {
+      const message = $("cardSettingsMessage");
+      applyCardSettings.disabled = true;
+      resetCardSettings.disabled = true;
+      message.classList.remove("bad");
+      message.textContent = reset ? "正在恢复默认值…" : "正在校验并保存…";
+      try {
+        const response = await fetch("/api/card-settings", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            reset,
+            settings:reset ? {} : collectCardSettings()
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "保存失败");
+        renderCardSettings(payload);
+        message.textContent = payload.persisted
+          ? "已应用并写入 config.json，正在重新解算。"
+          : "已应用到当前进程，正在重新解算。";
+      } catch (error) {
+        message.classList.add("bad");
+        message.textContent = error.message;
+      } finally {
+        applyCardSettings.disabled = false;
+        resetCardSettings.disabled = false;
+      }
+    }
+
+    function renderWhiteSettings(payload) {
+      whiteSettingsSchema = payload.schema || {};
+      whiteSettingsFields.innerHTML = "";
+      const groups = new Map();
+      for (const [key, spec] of Object.entries(whiteSettingsSchema)) {
+        const groupName = spec.group || "其他";
+        if (!groups.has(groupName)) groups.set(groupName, []);
+        groups.get(groupName).push([key, spec]);
+      }
+      for (const [groupName, entries] of groups) {
+        const group = document.createElement("section");
+        group.className = "tuning-group";
+        const title = document.createElement("h3");
+        title.textContent = groupName;
+        group.appendChild(title);
+        for (const [key, spec] of entries) {
+          const label = document.createElement("label");
+          label.textContent = spec.label;
+          const input = document.createElement("input");
+          input.type = "number";
+          input.id = `white-${key}`;
+          input.dataset.whiteKey = key;
+          input.min = spec.minimum;
+          input.max = spec.maximum;
+          input.step = spec.step;
+          input.value = payload.values?.[key] ?? payload.defaults?.[key] ?? "";
+          label.appendChild(input);
+          group.appendChild(label);
+        }
+        whiteSettingsFields.appendChild(group);
+      }
+      whiteSettingsLoaded = true;
+    }
+
+    async function loadWhiteSettings() {
+      if (whiteSettingsLoaded || whiteSettingsLoading) return;
+      whiteSettingsLoading = true;
+      try {
+        const response = await fetch("/api/white-settings", {cache:"no-store"});
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "读取白片参数失败");
+        renderWhiteSettings(payload);
+      } finally {
+        whiteSettingsLoading = false;
+      }
+    }
+
+    function collectWhiteSettings() {
+      const values = {};
+      for (const input of whiteSettingsFields.querySelectorAll("input[data-white-key]")) {
+        if (!input.checkValidity() || input.value === "") {
+          throw new Error(`${input.parentElement.firstChild.textContent}超出允许范围`);
+        }
+        const spec = whiteSettingsSchema[input.dataset.whiteKey];
+        values[input.dataset.whiteKey] = spec.type === "int"
+          ? Math.round(Number(input.value)) : Number(input.value);
+      }
+      if (values.target_min_width_mm >= values.target_max_width_mm)
+        throw new Error("目标长边最小值必须小于最大值");
+      if (values.target_min_height_mm >= values.target_max_height_mm)
+        throw new Error("目标短边最小值必须小于最大值");
+      if (values.piece_min_area_mm2 >= values.piece_max_area_mm2)
+        throw new Error("单片面积最小值必须小于最大值");
+      if (values.exact_search_seconds > values.max_search_seconds)
+        throw new Error("精确边搜索时限不能大于总搜索时限");
+      return values;
+    }
+
+    async function saveWhiteSettings(reset = false) {
+      const message = $("whiteSettingsMessage");
+      applyWhiteSettings.disabled = true;
+      resetWhiteSettings.disabled = true;
+      message.classList.remove("bad");
+      message.textContent = reset ? "正在恢复默认值…" : "正在校验并保存…";
+      try {
+        const response = await fetch("/api/white-settings", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            reset,
+            settings:reset ? {} : collectWhiteSettings()
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "保存失败");
+        renderWhiteSettings(payload);
+        message.textContent = payload.persisted
+          ? "已应用并写入 config.json，正在重新解算。"
+          : "已应用到当前进程，正在重新解算。";
+      } catch (error) {
+        message.classList.add("bad");
+        message.textContent = error.message;
+      } finally {
+        applyWhiteSettings.disabled = false;
+        resetWhiteSettings.disabled = false;
+      }
+    }
+
+    async function applySettings() {
+      if (applying) {
+        settingsDirty = true;
+        return;
+      }
+      applying = true;
+      settingsDirty = false;
+      try {
+        const payload = {
+          mode:mode.value, source_region:sourceRegion.value,
+          use_color_hints:useColorHints.checked,
+          paper_color:paperColor.value, piece_color:pieceColor.value
+        };
+        const signature = JSON.stringify(payload);
+        if (signature === lastSettingsSignature) return;
+        const response = await fetch("/api/settings", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body:signature
+        });
+        if (!response.ok) throw new Error("设置更新失败");
+        lastSettingsSignature = signature;
+      } finally {
+        applying = false;
+        if (settingsDirty) applySettings();
+      }
+    }
+
+    function scheduleSettings() {
+      settingsDirty = true;
+      clearTimeout(settingsTimer);
+      settingsTimer = setTimeout(applySettings, 280);
+    }
+
+    mode.addEventListener("change", () => { updateModeHelp(); scheduleSettings(); });
+    sourceRegion.addEventListener("change", scheduleSettings);
+    useColorHints.addEventListener("change", scheduleSettings);
+    paperColor.addEventListener("change", scheduleSettings);
+    pieceColor.addEventListener("change", scheduleSettings);
+    applyCardSettings.addEventListener("click", () => saveCardSettings(false));
+    resetCardSettings.addEventListener("click", () => saveCardSettings(true));
+    applyWhiteSettings.addEventListener("click", () => saveWhiteSettings(false));
+    resetWhiteSettings.addEventListener("click", () => saveWhiteSettings(true));
+
+    analyzeImage.addEventListener("click", async () => {
+      const file = imageFile.files[0];
+      if (!file) {
+        $("error").style.display = "block";
+        $("error").textContent = "请先选择一张图片。";
+        return;
+      }
+      analyzeImage.disabled = true;
+      $("statusText").textContent = "正在识别上传图片";
+      try {
+        await applySettings();
+        const response = await fetch("/api/analyze-image", {
+          method:"POST", headers:{"Content-Type":file.type || "application/octet-stream"},
+          body:await file.arrayBuffer()
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "图片识别失败");
+        await refresh();
+      } catch (error) {
+        $("error").style.display = "block";
+        $("error").textContent = error.message;
+      } finally { analyzeImage.disabled = false; }
+    });
+
+    resumeCamera.addEventListener("click", async () => {
+      resumeCamera.disabled = true;
+      try {
+        await fetch("/api/resume-camera", {method:"POST"});
+        await refresh();
+      } finally { resumeCamera.disabled = false; }
+    });
+    resetTarget.addEventListener("click", async () => {
+      resetTarget.disabled = true;
+      try {
+        await fetch("/api/reset-target-layout", {method:"POST"});
+        await refresh();
+      } finally { resetTarget.disabled = false; }
+    });
+    downloadMotionJson.addEventListener("click", () => location.assign(`/api/export-motion.json?t=${Date.now()}`));
+    downloadMotionCsv.addEventListener("click", () => location.assign(`/api/export-motion.csv?t=${Date.now()}`));
+
+    function mm(point) {
+      return point ? `${Number(point[0]).toFixed(1)}, ${Number(point[1]).toFixed(1)}` : "--";
+    }
+    async function refresh() {
+      try {
+        const response = await fetch("/api/status", {cache:"no-store"});
+        const state = await response.json();
+        const uploaded = state.input_mode === "uploaded_image";
+        $("dot").classList.toggle("ok", state.motion_ready);
+        $("statusText").textContent = state.motion_ready
+          ? (state.solution_locked ? "拼接方式已锁定，视觉持续更新" : "方案可执行")
+          : (state.ok ? "已识别，方案校验中" : "等待有效场景");
+        $("fps").textContent = `${Number(state.capture_fps).toFixed(1)} FPS`;
+        $("analysis").textContent = `${Number(state.analysis_ms).toFixed(0)} ms`;
+        $("lockState").textContent = state.solution_locked ? "仅锁拼法" : "动态解算";
+        if (!settingsLoaded) {
+          mode.value = state.mode;
+          sourceRegion.value = state.source_region_setting;
+          useColorHints.checked = state.use_color_hints;
+          paperColor.value = state.paper_color;
+          pieceColor.value = state.piece_color;
+          lastSettingsSignature = JSON.stringify({
+            mode:mode.value, source_region:sourceRegion.value,
+            use_color_hints:useColorHints.checked,
+            paper_color:paperColor.value, piece_color:pieceColor.value
+          });
+          settingsLoaded = true;
+        }
+        if (mode.value === "unknown-pattern" && !cardSettingsLoaded) {
+          try { await loadCardSettings(); }
+          catch (error) {
+            $("cardSettingsMessage").classList.add("bad");
+            $("cardSettingsMessage").textContent = error.message;
+          }
+        }
+        if (mode.value === "unknown-white" && !whiteSettingsLoaded) {
+          try { await loadWhiteSettings(); }
+          catch (error) {
+            $("whiteSettingsMessage").classList.add("bad");
+            $("whiteSettingsMessage").textContent = error.message;
+          }
+        }
+        updateModeHelp();
+        $("error").style.display = state.error ? "block" : "none";
+        $("error").textContent = state.error || "";
+        downloadMotionJson.disabled = !state.motion_export_ready;
+        downloadMotionCsv.disabled = !state.motion_export_ready;
+
+        const result = state.result;
+        $("pieces").textContent = result ? result.pieces.length : "--";
+        $("route").textContent = result ? `${result.source_region} → ${result.destination_region}` : "--";
+        $("solverMethod").textContent = result?.solver?.solver_method === "taught_layout"
+          ? "示教模板" : (result ? (result.mode === "fixed" ? "题图模板" : "自主搜索") : "--");
+        $("divider").textContent = result ? `${result.paper.divider.detected_y_mm.toFixed(1)} mm` : "--";
+        $("dividerWidth").textContent = result ? `${result.paper.divider.width_mm.toFixed(1)} mm` : "--";
+        $("targetSize").textContent = result?.solver?.target_size_mm
+          ? `${result.solver.target_size_mm[0].toFixed(1)}×${result.solver.target_size_mm[1].toFixed(1)}`
+          : "--";
+        const fill = result?.solver?.fill_ratio ?? result?.solver?.target_coverage_ratio;
+        $("fillRatio").textContent = fill == null ? "--" : `${(fill * 100).toFixed(1)}%`;
+
+        const tbody = document.querySelector("#poseTable tbody");
+        tbody.innerHTML = "";
+        if (result?.plan?.length) {
+          $("empty").hidden = true; $("poseTable").hidden = false;
+          for (const pose of result.plan) {
+            const row = document.createElement("tr");
+            row.innerHTML = `<td>${pose.piece_id}</td><td>${mm(pose.pick_mm)}</td>` +
+              `<td>${mm(pose.place_mm)}</td><td class="angle">${Number(pose.rotate_deg).toFixed(1)}°</td>`;
+            tbody.appendChild(row);
+          }
+        } else {
+          $("empty").hidden = false; $("poseTable").hidden = true;
+        }
+      } catch (error) {
+        $("dot").classList.remove("ok");
+        $("statusText").textContent = "上位机断线";
+      }
+    }
+    setInterval(refresh, 500);
+    updateModeHelp();
+    refresh();
+  </script>
+</body>
+</html>

@@ -130,17 +130,24 @@ def _placement_geometry(
 
 
 def target_rectangle_pixels(
-    roi: tuple[int, int, int, int], config: AssemblyConfig | None = None
+    roi: tuple[int, int, int, int],
+    config: AssemblyConfig | None = None,
+    target_rect_mm: tuple[float, float, float, float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Return the lower-half target rectangle in global image pixels."""
     cfg = config or AssemblyConfig()
-    split_y = cfg.a4_height_mm * cfg.split_fraction
-    center = np.array([
-        cfg.a4_width_mm / 2.0,
-        split_y + (cfg.a4_height_mm - split_y) / 2.0,
-    ])
-    top_left = center - [cfg.target_width_mm / 2.0, cfg.target_height_mm / 2.0]
-    bottom_right = center + [cfg.target_width_mm / 2.0, cfg.target_height_mm / 2.0]
+    if target_rect_mm is None:
+        split_y = cfg.a4_height_mm * cfg.split_fraction
+        center = np.array([
+            cfg.a4_width_mm / 2.0,
+            split_y + (cfg.a4_height_mm - split_y) / 2.0,
+        ])
+        top_left = center - [cfg.target_width_mm / 2.0, cfg.target_height_mm / 2.0]
+        bottom_right = center + [cfg.target_width_mm / 2.0, cfg.target_height_mm / 2.0]
+    else:
+        x, y, width, height = target_rect_mm
+        top_left = np.array([x, y], dtype=np.float64)
+        bottom_right = top_left + [width, height]
     corners = a4_to_global_pixels(np.asarray([top_left, bottom_right]), roi, cfg)
     return (
         float(corners[0, 0]),
@@ -238,7 +245,8 @@ def build_movement_plan(
 
     roi_x, roi_y, roi_width, roi_height = assembly.roi
     split_y_px = roi_y + round(roi_height * cfg.split_fraction)
-    target_px = target_rectangle_pixels(assembly.roi, cfg)
+    target_px = target_rectangle_pixels(assembly.roi, cfg, assembly.target_rect_mm)
+    target_x, target_y, target_width, target_height = assembly.target_rect_mm
     return {
         "format": "puzzle-device.assembly-movement-plan.v1",
         "created_local": datetime.now().astimezone().isoformat(),
@@ -255,15 +263,31 @@ def build_movement_plan(
         "source_region_px": [roi_x, roi_y, roi_width, split_y_px - roi_y],
         "target_region_px": [roi_x, split_y_px, roi_width, roi_y + roi_height - split_y_px],
         "target_rect": {
-            "center_a4_mm": [cfg.a4_width_mm / 2.0,
-                              cfg.a4_height_mm * (1.0 + cfg.split_fraction) / 2.0],
-            "size_mm": [cfg.target_width_mm, cfg.target_height_mm],
+            "center_a4_mm": _xy([
+                target_x + target_width / 2.0,
+                target_y + target_height / 2.0,
+            ]),
+            "size_mm": _xy([target_width, target_height]),
             "rect_px": _xy(target_px),
         },
         "quality": {
             "geometry_verified": True,
+            "texture_verified": assembly.texture_score is not None,
+            "texture_score": (
+                None if assembly.texture_score is None
+                else round(float(assembly.texture_score), 6)
+            ),
+            "texture_seam_scores": [
+                round(float(score), 6) for score in assembly.texture_seam_scores
+            ],
             "geometry_score": round(float(assembly.score), 6),
             "recovered_size_mm": _xy(assembly.recovered_size_mm),
+            "target_size_range_mm": {
+                "width": [cfg.minimum_target_width_mm, cfg.maximum_target_width_mm],
+                "height": [cfg.minimum_target_height_mm, cfg.maximum_target_height_mm],
+            },
+            "target_size_tolerance_mm": round(float(cfg.target_size_tolerance_mm), 3),
+            "recovered_size_in_range": True,
             "rectangle_fill_ratio": round(float(assembly.rectangle_fill_ratio), 6),
             "union_convexity_ratio": round(float(assembly.union_convexity_ratio), 6),
             "hull_rectangle_ratio": round(float(assembly.hull_rectangle_ratio), 6),
@@ -299,6 +323,38 @@ def draw_assembly_preview(
         np.round(a4_to_global_pixels(polygon, assembly.roi, cfg)).astype(np.int32)
         for polygon in target_polygons_a4
     ]
+    target_x, target_y, target_width, target_height = target_rectangle_pixels(
+        assembly.roi, cfg, assembly.target_rect_mm
+    )
+    target_box = np.round(np.array([
+        [target_x, target_y],
+        [target_x + target_width, target_y],
+        [target_x + target_width, target_y + target_height],
+        [target_x, target_y + target_height],
+    ])).astype(np.int32)
+    cv2.polylines(output, [target_box], True, (80, 255, 120), 2, cv2.LINE_AA)
+    label_origin = (int(target_x) + 5, max(18, int(target_y) - 7))
+    cv2.putText(
+        output,
+        f"{assembly.recovered_size_mm[0]:.1f} x {assembly.recovered_size_mm[1]:.1f} mm",
+        label_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (80, 255, 120),
+        2,
+        cv2.LINE_AA,
+    )
+    if assembly.texture_score is not None:
+        cv2.putText(
+            output,
+            f"texture seam: {assembly.texture_score:.3f} (lower is better)",
+            (label_origin[0], label_origin[1] + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (80, 255, 120),
+            1,
+            cv2.LINE_AA,
+        )
     for index, polygon in enumerate(target_polygons):
         cv2.fillPoly(fill, [polygon], colors[index % len(colors)])
     output = cv2.addWeighted(fill, 0.24, output, 0.76, 0.0)

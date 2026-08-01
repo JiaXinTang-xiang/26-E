@@ -1,0 +1,928 @@
+#!/usr/bin/env python3
+"""Fixed-layout one-button competition GUI for the physical puzzle device."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+from datetime import datetime
+from pathlib import Path
+import subprocess
+import sys
+import time
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+import cv2
+
+from apps.puzzle_control_gui import PuzzleControlApp
+from puzzle_device.calibration.gantry_protocol import (
+    STATUS_ACTION_FAILED,
+    STATUS_COMMAND_REJECTED,
+)
+from puzzle_device.competition import (
+    COMPETITION_LIMIT_SECONDS,
+    FIELD_WHITE_MODE,
+    PLAYING_CARD_MODE,
+    SELF_ASSEMBLY_MODE,
+    SELF_TRANSFER_MODE,
+    CompetitionMode,
+    format_competition_time,
+)
+from puzzle_device.planning import (
+    build_movement_plan,
+    build_transfer_plan,
+    draw_assembly_preview,
+    draw_transfer_preview,
+    solve_self_assembly,
+    solve_textured_assembly,
+)
+from puzzle_device.vision.piece_vision import draw_piece_observations
+
+
+RUN_LOG_DIR = Path("output/competition_runs")
+
+
+class CompetitionApp(PuzzleControlApp):
+    """Competition-focused shell around the verified planning/control pipeline."""
+
+    def __init__(
+        self,
+        root: tk.Tk,
+        camera_index: int,
+        serial_port: str | None,
+        rotate_180: bool = True,
+    ) -> None:
+        self.competition_active = False
+        self.competition_mode: CompetitionMode | None = None
+        self.competition_started_at: float | None = None
+        self.competition_finished_elapsed: float | None = None
+        self.competition_result = "idle"
+        self.competition_waiting_for_serial = False
+        self.last_competition_mode: CompetitionMode | None = None
+        self.run_log_path: Path | None = None
+        self._allow_plan_loading = False
+        super().__init__(root, camera_index, serial_port, rotate_180)
+        self._allow_plan_loading = True
+        self.tasks = []
+        self.preview = None
+        self.plan_state.set("方案：等待选择比赛题目")
+        self.task_state.set("任务：尚未开始")
+        self.status.set("确认设备状态后，按下对应题目的大按钮并同时移除摄像头遮挡。")
+        if serial_port:
+            self.root.after(250, self._connect_serial)
+
+    def _build_ui(self) -> None:
+        self.root.title("拼图装置 - 比赛一键控制")
+        self.root.geometry("1366x768")
+        self.root.minsize(1100, 650)
+
+        style = ttk.Style()
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        style.configure("CompetitionTitle.TLabel", font=("Microsoft YaHei UI", 18, "bold"))
+        style.configure("Timer.TLabel", font=("Consolas", 32, "bold"), foreground="#0b4f6c")
+        style.configure("Mode.TButton", font=("Microsoft YaHei UI", 15, "bold"), padding=(12, 15))
+        style.configure("Danger.TButton", font=("Microsoft YaHei UI", 11, "bold"), padding=8)
+
+        header = ttk.Frame(self.root, padding=(14, 8))
+        header.pack(fill="x")
+        ttk.Label(
+            header, text="拼图装置比赛控制", style="CompetitionTitle.TLabel"
+        ).pack(side="left")
+        ttk.Label(
+            header,
+            text="比赛页一键运行；调试页保留单步操作",
+            foreground="#8a3b00",
+        ).pack(side="right", pady=(7, 0))
+
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        competition_page = ttk.Frame(self.notebook, padding=8)
+        debug_page = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(competition_page, text="比赛")
+        self.notebook.add(debug_page, text="调试")
+        self._build_competition_page(competition_page)
+        self._build_debug_page(debug_page)
+
+        footer = ttk.Frame(self.root, padding=(14, 4))
+        footer.pack(fill="x")
+        ttk.Label(
+            footer, textvariable=self.status, foreground="#174c75", wraplength=1320
+        ).pack(side="left", fill="x", expand=True)
+
+    def _build_competition_page(self, page: ttk.Frame) -> None:
+        page.columnconfigure(0, weight=5)
+        page.columnconfigure(1, weight=3, minsize=390)
+        page.rowconfigure(0, weight=1)
+
+        image_box = ttk.LabelFrame(page, text="实时相机 / 拼接预览", padding=5)
+        image_box.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.canvas = tk.Canvas(image_box, background="#202326", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda _event: self._draw_image())
+
+        controls = ttk.Frame(page)
+        controls.grid(row=0, column=1, sticky="nsew")
+
+        self.timer_text = tk.StringVar(value="00:00.0")
+        self.competition_state = tk.StringVar(value="待机：请选择题目")
+        timer_box = ttk.LabelFrame(controls, text="比赛计时（最长120秒）", padding=8)
+        timer_box.pack(fill="x")
+        ttk.Label(timer_box, textvariable=self.timer_text, style="Timer.TLabel").pack()
+        self.competition_state_label = tk.Label(
+            timer_box,
+            textvariable=self.competition_state,
+            background="#d9e7ef",
+            foreground="#12384a",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            padx=8,
+            pady=7,
+        )
+        self.competition_state_label.pack(fill="x", pady=(4, 0))
+
+        modes = ttk.LabelFrame(controls, text="选择比赛题目", padding=8)
+        modes.pack(fill="x", pady=(8, 0))
+        modes.columnconfigure(0, weight=1, uniform="competition_mode")
+        modes.columnconfigure(1, weight=1, uniform="competition_mode")
+        self.mode_buttons: list[ttk.Button] = []
+        for index, (mode, note) in enumerate((
+            (SELF_TRANSFER_MODE, "固定4块\n直接搬运到指定区域"),
+            (SELF_ASSEMBLY_MODE, "固定4块\n轮廓几何拼接"),
+            (FIELD_WHITE_MODE, "自动识别1～4块\n白色碎片几何拼接"),
+            (PLAYING_CARD_MODE, "自动识别1～4块\n几何+牌面接缝匹配"),
+        )):
+            button = ttk.Button(
+                modes,
+                text=f"{mode.title}\n{note}",
+                style="Mode.TButton",
+                command=lambda selected=mode: self._start_competition(selected),
+            )
+            button.grid(
+                row=index // 2,
+                column=index % 2,
+                sticky="nsew",
+                padx=(0, 4) if index % 2 == 0 else (4, 0),
+                pady=(0, 6) if index < 2 else (0, 0),
+            )
+            self.mode_buttons.append(button)
+
+        state_box = ttk.LabelFrame(controls, text="当前流程", padding=8)
+        state_box.pack(fill="x", pady=(8, 0))
+        for variable in (
+            self.camera_state,
+            self.serial_state,
+            self.controller_state,
+            self.plan_state,
+            self.task_state,
+        ):
+            ttk.Label(
+                state_box, textvariable=variable, wraplength=365, justify="left"
+            ).pack(fill="x", pady=1)
+
+        task_box = ttk.LabelFrame(controls, text="任务进度", padding=6)
+        task_box.pack(fill="both", expand=True, pady=(8, 0))
+        self.task_list = tk.Listbox(task_box, font=("Consolas", 9), height=5)
+        self.task_list.pack(fill="both", expand=True)
+
+        buttons = ttk.Frame(controls)
+        buttons.pack(fill="x", pady=(8, 0))
+        self.stop_competition_button = ttk.Button(
+            buttons,
+            text="停止后续任务（当前块不会急停）",
+            style="Danger.TButton",
+            command=self._stop_competition,
+        )
+        self.stop_competition_button.pack(side="left", fill="x", expand=True)
+        ttk.Button(buttons, text="复位界面", command=self._reset_competition_ui).pack(
+            side="left", padx=(8, 0)
+        )
+        ttk.Button(
+            buttons,
+            text="刷新当前状态",
+            command=self._refresh_competition_state,
+        ).pack(side="left", padx=(8, 0))
+        self.retry_button = ttk.Button(
+            controls, text="再次运行上一题", command=self._retry_last_competition
+        )
+        self.retry_button.pack(fill="x", pady=(6, 0))
+
+    def _build_debug_page(self, page: ttk.Frame) -> None:
+        page.columnconfigure(0, weight=3)
+        page.columnconfigure(1, weight=2, minsize=410)
+        page.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(page)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        debug_image = ttk.LabelFrame(left, text="相机 / 当前方案", padding=5)
+        debug_image.pack(fill="both", expand=True)
+        self.debug_canvas = tk.Canvas(
+            debug_image, background="#202326", highlightthickness=0
+        )
+        self.debug_canvas.pack(fill="both", expand=True)
+        self.debug_canvas.bind("<Configure>", lambda _event: self._draw_image())
+
+        log_box = ttk.LabelFrame(left, text="带时间戳的运行与通信日志", padding=5)
+        log_box.pack(fill="x", pady=(8, 0))
+        self.log = tk.Text(log_box, height=8, wrap="word", state="disabled", font=("Consolas", 9))
+        self.log.pack(fill="x")
+
+        right_container = ttk.Frame(page)
+        right_container.grid(row=0, column=1, sticky="nsew")
+        right_container.columnconfigure(0, weight=1)
+        right_container.rowconfigure(0, weight=1)
+        self.debug_controls_canvas = tk.Canvas(
+            right_container, highlightthickness=0, borderwidth=0
+        )
+        debug_scrollbar = ttk.Scrollbar(
+            right_container, orient="vertical", command=self.debug_controls_canvas.yview
+        )
+        self.debug_controls_canvas.configure(yscrollcommand=debug_scrollbar.set)
+        self.debug_controls_canvas.grid(row=0, column=0, sticky="nsew")
+        debug_scrollbar.grid(row=0, column=1, sticky="ns")
+        right = ttk.Frame(self.debug_controls_canvas, padding=(0, 0, 6, 8))
+        self.debug_controls_window = self.debug_controls_canvas.create_window(
+            (0, 0), window=right, anchor="nw"
+        )
+        right.bind("<Configure>", self._update_debug_scroll_region)
+        self.debug_controls_canvas.bind("<Configure>", self._resize_debug_controls)
+        self.debug_controls_canvas.bind("<Enter>", self._enable_debug_mousewheel)
+        self.debug_controls_canvas.bind("<Leave>", self._disable_debug_mousewheel)
+
+        serial_box = ttk.LabelFrame(right, text="设备连接", padding=8)
+        serial_box.pack(fill="x")
+        ttk.Label(serial_box, text="CH340端口").grid(row=0, column=0, sticky="w")
+        ttk.Entry(serial_box, textvariable=self.serial_port).grid(
+            row=0, column=1, sticky="ew", padx=(8, 0)
+        )
+        ttk.Button(serial_box, text="连接/重连串口", command=self._connect_serial).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        ttk.Button(
+            serial_box,
+            text="刷新并自动查找 CH340",
+            command=self._refresh_serial_port,
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(
+            serial_box,
+            text="安全通信自检（不启动电机）",
+            command=self._start_serial_health_check,
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Button(
+            serial_box,
+            text="重启上位机串口（不复位STM32）",
+            command=self._restart_serial_connection,
+        ).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        ttk.Label(
+            serial_box,
+            text="空闲和识别阶段断线会自动重连；动作阶段绝不自动重发当前块。",
+            foreground="#8a3b00",
+            wraplength=380,
+            justify="left",
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        serial_box.columnconfigure(1, weight=1)
+
+        plan_box = ttk.LabelFrame(right, text="识别与方案调试（不会自动执行）", padding=8)
+        plan_box.pack(fill="x", pady=(8, 0))
+        self.piece_count_buttons = []
+        self.calculate_plan_button = ttk.Button(
+            plan_box, text="自动判断1～4块并计算方案", command=self._debug_auto_plan
+        )
+        self.calculate_plan_button.pack(fill="x")
+        ttk.Button(
+            plan_box, text="固定4块并计算方案", command=lambda: self._debug_fixed_plan(4)
+        ).pack(fill="x", pady=(6, 0))
+        ttk.Button(plan_box, text="重新加载最新方案", command=self._load_plan).pack(
+            fill="x", pady=(6, 0)
+        )
+        direction = ttk.Frame(plan_box)
+        direction.pack(fill="x", pady=(6, 0))
+        ttk.Label(direction, text="舵机方向").pack(side="left")
+        ttk.Radiobutton(
+            direction, text="同向", variable=self.servo_direction, value=1,
+            command=self._reload_tasks,
+        ).pack(side="left", padx=(12, 0))
+        ttk.Radiobutton(
+            direction, text="反向", variable=self.servo_direction, value=-1,
+            command=self._reload_tasks,
+        ).pack(side="left", padx=(8, 0))
+
+        execution = ttk.LabelFrame(right, text="运动调试（会真实运动）", padding=8)
+        execution.pack(fill="x", pady=(8, 0))
+        self.next_button = ttk.Button(
+            execution, text="发送当前块（有安全确认）", command=self._send_next
+        )
+        self.next_button.pack(fill="x")
+        self.auto_button = ttk.Button(
+            execution, text="自动连续执行（有安全确认）", command=self._start_auto_run
+        )
+        self.auto_button.pack(fill="x", pady=(6, 0))
+        self.stop_auto_button = ttk.Button(
+            execution, text="停止后续自动任务", command=self._stop_auto_run
+        )
+        self.stop_auto_button.pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            execution, text="确认当前块已完成并回零",
+            command=self._confirm_completed_manually,
+        ).pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            execution, text="解除上位机等待（不推进）",
+            command=self._clear_wait_without_advancing,
+        ).pack(fill="x", pady=(6, 0))
+
+        tools = ttk.LabelFrame(right, text="专用调试工具", padding=8)
+        tools.pack(fill="x", pady=(8, 0))
+        ttk.Button(
+            tools, text="视觉识别与参数调试", command=lambda: self._launch_tool(
+                "apps.piece_detection_gui", include_serial=False
+            )
+        ).pack(fill="x")
+        ttk.Button(
+            tools,
+            text="背景颜色调试（橙色A4 / 白色碎片）",
+            command=lambda: self._launch_tool(
+                "apps.piece_vision_debug", include_serial=False
+            ),
+        ).pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            tools, text="相机到龙门架标定", command=lambda: self._launch_tool(
+                "apps.manual_calibration_gui", include_serial=True
+            )
+        ).pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            tools, text="OpenCV分阶段视觉调试", command=lambda: self._launch_tool(
+                "apps.piece_vision_debug", include_serial=False
+            )
+        ).pack(fill="x", pady=(6, 0))
+        ttk.Label(
+            tools,
+            text="打开专用工具时会关闭本界面，避免摄像头或串口被两个程序同时占用。",
+            foreground="#8a3b00",
+            wraplength=380,
+            justify="left",
+        ).pack(fill="x", pady=(6, 0))
+
+    def _update_debug_scroll_region(self, _event=None) -> None:
+        self.debug_controls_canvas.configure(
+            scrollregion=self.debug_controls_canvas.bbox("all")
+        )
+
+    def _resize_debug_controls(self, event: tk.Event) -> None:
+        self.debug_controls_canvas.itemconfigure(
+            self.debug_controls_window, width=max(1, event.width)
+        )
+
+    def _enable_debug_mousewheel(self, _event=None) -> None:
+        self.root.bind_all("<MouseWheel>", self._scroll_debug_controls)
+
+    def _disable_debug_mousewheel(self, _event=None) -> None:
+        self.root.unbind_all("<MouseWheel>")
+
+    def _scroll_debug_controls(self, event: tk.Event) -> None:
+        if event.delta:
+            self.debug_controls_canvas.yview_scroll(-int(event.delta / 120), "units")
+
+    def _load_plan(self, show_errors: bool = True) -> None:
+        if not self._allow_plan_loading:
+            return
+        super()._load_plan(show_errors)
+
+    def _plan_geometry_is_verified(self, document: dict) -> bool:
+        quality = document.get("quality", {})
+        if document.get("operation_mode") == "transfer_only":
+            return quality.get("transfer_only") is True and quality.get("geometry_verified") is True
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.planning_method == "texture"
+        ):
+            return (
+                quality.get("geometry_verified") is True
+                and quality.get("texture_verified") is True
+            )
+        return super()._plan_geometry_is_verified(document)
+
+    def _start_competition(self, mode: CompetitionMode) -> None:
+        if self.competition_active or self.waiting_for_completion or self.planning_active:
+            messagebox.showwarning("任务正在进行", "请等待当前流程结束或停止后续任务。")
+            return
+        if not self.serial.connected:
+            self._connect_serial()
+        if not self.serial.connected:
+            messagebox.showerror("无法开始比赛", "必须先连接下位机串口。")
+            return
+
+        self._prepare_new_competition_run()
+        self.competition_active = True
+        self.competition_mode = mode
+        self.last_competition_mode = mode
+        self.competition_started_at = time.monotonic()
+        self.competition_finished_elapsed = None
+        self.competition_result = "running"
+        self.competition_waiting_for_serial = False
+        self.timer_text.set("00:00.0")
+        self._set_mode_buttons_enabled(False)
+        self._set_competition_state(f"运行中：{mode.title}", "#ffe59a", "#5d3a00")
+        self._start_run_log(mode)
+        self._append_log(f"COMPETITION START: {mode.key}")
+        if not self._begin_plan_calculation(mode.expected_piece_count):
+            self._finish_competition("failed", "无法启动视觉规划")
+        elif mode.planning_method == "transfer":
+            self.plan_state.set("搬运：正在稳定识别4块碎片…")
+            self.status.set("只识别4块并放到下半区4个固定点，不调用拼接算法。")
+        elif mode.planning_method == "self_assembly":
+            self.plan_state.set("自备拼图：正在稳定识别4块碎片…")
+            self.status.set("优先完整边和100×60、5:3方案；无可靠拼接时自动保底搬运。")
+        elif mode.planning_method == "texture":
+            self.plan_state.set("扑克牌：正在稳定识别1～4块碎片…")
+            self.status.set("将先筛选可靠矩形方案，再用牌面花纹接缝连续性确定排列。")
+
+    def _prepare_new_competition_run(self) -> None:
+        """Discard old run state without touching calibration or saved parameters."""
+        self._cancel_accept_timeout()
+        self._cancel_auto_continue()
+        self._cancel_serial_health_check()
+        self.status_parser.reset()
+        if self.serial.connected:
+            self.serial.discard_input()
+        self.tasks = []
+        self.current_task_index = 0
+        self.waiting_for_completion = False
+        self.waiting_for_accept = False
+        self.auto_run_enabled = False
+        self.serial_fault_during_motion = False
+        self.preview = None
+        self._refresh_task_list()
+        self.plan_state.set("方案：正在开始新一轮")
+        self.task_state.set("任务：等待识别")
+
+    def _retry_last_competition(self) -> None:
+        if self.last_competition_mode is None:
+            messagebox.showinfo("没有上一题", "请先运行一次题目。")
+            return
+        self._start_competition(self.last_competition_mode)
+
+    def _solve_for_control(
+        self, frame, pieces, roi, calibration, calibration_name, config
+    ):
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.planning_method == "transfer"
+        ):
+            def to_pulse(point: tuple[float, float]) -> tuple[int, int]:
+                x, y = calibration.predict_pulse(*point)
+                return round(x), round(y)
+
+            document, target_polygons = build_transfer_plan(
+                pieces,
+                roi,
+                pulse_mapper=to_pulse,
+                calibration_file=calibration_name,
+                config=config,
+            )
+            preview = draw_transfer_preview(
+                draw_piece_observations(frame, pieces), pieces, target_polygons
+            )
+            return "solve", document, preview
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.planning_method == "self_assembly"
+        ):
+            def to_pulse(point: tuple[float, float]) -> tuple[int, int]:
+                x, y = calibration.predict_pulse(*point)
+                return round(x), round(y)
+
+            try:
+                assembly = solve_self_assembly(
+                    [piece.polygon for piece in pieces],
+                    roi,
+                    config,
+                    require_upper_half=True,
+                )
+                document = build_movement_plan(
+                    pieces,
+                    assembly,
+                    pulse_mapper=to_pulse,
+                    calibration_file=calibration_name,
+                    config=config,
+                )
+                document["planning_method"] = "self_fixed_shape_preference"
+                preview = draw_assembly_preview(
+                    draw_piece_observations(frame, pieces), pieces, assembly, config
+                )
+                return "solve", document, preview
+            except (RuntimeError, ValueError, cv2.error) as exc:
+                document, target_polygons = build_transfer_plan(
+                    pieces,
+                    roi,
+                    pulse_mapper=to_pulse,
+                    calibration_file=calibration_name,
+                    config=config,
+                )
+                document["operation_mode"] = "assembly_fallback_transfer"
+                document["planning_method"] = "fallback_fixed_transfer"
+                document["fallback_reason"] = str(exc)
+                document["quality"]["assembly_fallback"] = True
+                preview = draw_transfer_preview(
+                    draw_piece_observations(frame, pieces), pieces, target_polygons
+                )
+                return "solve", document, preview
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.planning_method == "texture"
+        ):
+            assembly = solve_textured_assembly(
+                frame,
+                [piece.polygon for piece in pieces],
+                roi,
+                config,
+                require_upper_half=True,
+            )
+
+            def to_pulse(point: tuple[float, float]) -> tuple[int, int]:
+                x, y = calibration.predict_pulse(*point)
+                return round(x), round(y)
+
+            document = build_movement_plan(
+                pieces,
+                assembly,
+                pulse_mapper=to_pulse,
+                calibration_file=calibration_name,
+                config=config,
+            )
+            document["planning_method"] = "geometry_texture_seam"
+            preview = draw_assembly_preview(
+                draw_piece_observations(frame, pieces), pieces, assembly, config
+            )
+            return "solve", document, preview
+        return super()._solve_for_control(
+            frame, pieces, roi, calibration, calibration_name, config
+        )
+
+    def _is_transfer_mode(self) -> bool:
+        return (
+            self.competition_mode is not None
+            and self.competition_mode.planning_method == "transfer"
+        )
+
+    def _planning_progress_text(self, piece_count: int) -> tuple[str, str]:
+        if self.competition_active and self._is_transfer_mode():
+            return (
+                f"搬运：{piece_count} 块已稳定，正在生成下半区目标坐标…",
+                "识别已经稳定，正在分配A4下半区4个固定放置点并换算目标脉冲；不进行拼接解算。",
+            )
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.planning_method == "self_assembly"
+        ):
+            return (
+                f"自备拼图：{piece_count} 块已稳定，正在优先匹配完整边…",
+                "按原100×60、5:3规则排序；若拼接失败会自动生成4块保底搬运方案。",
+            )
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.planning_method == "texture"
+        ):
+            return (
+                f"扑克牌：{piece_count} 块已稳定，正在匹配几何和牌面花纹…",
+                "正在比较可靠矩形候选的接缝颜色连续性，花纹断裂最小的方案优先。",
+            )
+        return super()._planning_progress_text(piece_count)
+
+    def _loaded_plan_state_text(self, document: dict, task_count: int) -> str:
+        if document.get("operation_mode") == "assembly_fallback_transfer":
+            return f"保底搬运：拼接解算失败，已生成 {task_count} 块固定区域搬运任务"
+        if document.get("operation_mode") == "transfer_only":
+            return (
+                f"搬运：已分配 {task_count} 个固定放置点，"
+                "保持每块原方向，目标脉冲校验通过"
+            )
+        quality = document.get("quality", {})
+        if quality.get("texture_verified") is True:
+            return (
+                f"扑克牌：已加载 {task_count} 块，花纹接缝分 "
+                f"{float(quality.get('texture_score', 0.0)):.3f}（越低越连续），"
+                "几何、坐标和舵机角度校验通过"
+            )
+        return super()._loaded_plan_state_text(document, task_count)
+
+    def _on_plan_ready(self, document: dict, completed_count: int) -> None:
+        if not self.competition_active:
+            super()._on_plan_ready(document, completed_count)
+            return
+        self._load_plan(show_errors=False)
+        if not self.tasks:
+            self._finish_competition("failed", "生成的方案没有可执行任务")
+            return
+        operation_mode = document.get("operation_mode")
+        operation = (
+            "FALLBACK_TRANSFER" if operation_mode == "assembly_fallback_transfer"
+            else "TRANSFER" if operation_mode == "transfer_only"
+            else "ASSEMBLY"
+        )
+        self._append_log(f"COMPETITION {operation} READY: {completed_count} piece(s)")
+        if not self.serial.connected:
+            self.competition_waiting_for_serial = True
+            self._set_competition_state(
+                "方案完成：等待串口恢复", "#ffd7a1", "#6b3900"
+            )
+            self.status.set("方案已保存并校验通过；等待串口自动恢复后再发送第一块。")
+            self._schedule_serial_reconnect()
+            return
+        self._start_competition_execution()
+
+    def _start_competition_execution(self) -> None:
+        self.competition_waiting_for_serial = False
+        if self._is_transfer_mode():
+            self.status.set("搬运坐标校验通过，正在发送第一块；不进行拼接解算。")
+        else:
+            self.status.set("拼接方案校验通过，正在自动发送第一块；后续只在收到B1后继续。")
+        if not self._begin_auto_run(confirm=False):
+            self._finish_competition("failed", "自动连续执行未能启动")
+
+    def _finish_plan_failure(self, exc: Exception) -> None:
+        if self.competition_active and self._is_transfer_mode():
+            self.planning_active = False
+            self.planning_expected_piece_count = None
+            self._set_piece_count_controls_enabled(True)
+            self.calculate_plan_button.configure(text="自动判断1～4块并计算方案")
+            self.plan_state.set("搬运：坐标生成失败，请检查识别、ROI和标定")
+            self._append_log(f"TRANSFER ERROR: {exc}")
+            messagebox.showerror("搬运坐标生成失败", str(exc))
+            self._finish_competition("failed", f"搬运坐标生成失败：{exc}")
+            return
+        super()._finish_plan_failure(exc)
+        if self.competition_active:
+            self._finish_competition("failed", f"拼接方案失败：{exc}")
+
+    def _handle_status(self, status: int) -> None:
+        super()._handle_status(status)
+        if self.competition_active and status in (
+            STATUS_COMMAND_REJECTED,
+            STATUS_ACTION_FAILED,
+        ):
+            self._finish_competition("failed", f"下位机返回故障状态 {status:02X}")
+
+    def _transmit_task(self, task) -> bool:
+        sent = super()._transmit_task(task)
+        if self.competition_active and not sent:
+            self._finish_competition("failed", f"P{task.piece_id} 串口发送失败")
+        return sent
+
+    def _on_all_tasks_complete(self, _was_auto_run: bool, _show_dialog: bool) -> None:
+        if self.competition_active:
+            self._finish_competition("success", "全部碎片完成、舵机归位且XY已回零")
+            self._completion_signal()
+            return
+        super()._on_all_tasks_complete(_was_auto_run, _show_dialog)
+
+    def _finish_competition(self, result: str, reason: str) -> None:
+        if not self.competition_active and self.competition_result != "running":
+            return
+        elapsed = self._elapsed_seconds()
+        self.competition_active = False
+        self.competition_waiting_for_serial = False
+        self.competition_finished_elapsed = elapsed
+        self.competition_result = result
+        self.auto_run_enabled = False
+        self._cancel_auto_continue()
+        if self.planning_active:
+            self.planning_active = False
+            self.planning_generation += 1
+            if self.planning_future is not None:
+                self.planning_future.cancel()
+        self._set_mode_buttons_enabled(True)
+        if result == "success":
+            self._set_competition_state(
+                f"完成：{format_competition_time(elapsed)}", "#8fe3a5", "#124f25"
+            )
+            self.status.set(f"比赛流程完成：{reason}。")
+        else:
+            self._set_competition_state(
+                f"停止：{format_competition_time(elapsed)}", "#ffb0a8", "#68150d"
+            )
+            self.status.set(f"比赛流程停止：{reason}。当前已发送的单块动作不会被软件急停。")
+        self._append_log(
+            f"COMPETITION {result.upper()}: {format_competition_time(elapsed)} / {reason}"
+        )
+        self.run_log_path = None
+
+    def _stop_competition(self) -> None:
+        if not self.competition_active:
+            self.status.set("当前没有正在运行的比赛流程。")
+            return
+        self.planning_active = False
+        self.planning_generation += 1
+        if self.planning_future is not None:
+            self.planning_future.cancel()
+        self.waiting_for_accept = False
+        self._cancel_accept_timeout()
+        self._finish_competition("stopped", "操作员停止了后续任务")
+
+    def _reset_competition_ui(self) -> None:
+        if self.competition_active or self.waiting_for_completion:
+            messagebox.showwarning("不能复位", "当前流程或机械动作尚未结束。")
+            return
+        self.competition_mode = None
+        self.competition_started_at = None
+        self.competition_finished_elapsed = None
+        self.competition_result = "idle"
+        self.competition_waiting_for_serial = False
+        self.timer_text.set("00:00.0")
+        self._set_competition_state("待机：请选择题目", "#d9e7ef", "#12384a")
+        self.tasks = []
+        self.current_task_index = 0
+        self.preview = None
+        self._refresh_task_list()
+        self.plan_state.set("方案：等待选择比赛题目")
+        self.task_state.set("任务：尚未开始")
+        self.status.set("已复位比赛界面；相机和串口连接保持不变。")
+
+    def _refresh_competition_state(self) -> None:
+        """Clear stale planning/execution state without touching hardware setup."""
+        if self.competition_active or self.waiting_for_completion:
+            messagebox.showwarning(
+                "机械动作进行中",
+                "当前动作尚未收到完成状态，不能刷新；避免丢失下位机执行状态。",
+            )
+            return
+
+        # A previous debug calculation may still have a worker result queued.
+        self.planning_active = False
+        self.planning_expected_piece_count = None
+        self.planning_generation += 1
+        if self.planning_future is not None:
+            self.planning_future.cancel()
+            self.planning_future = None
+            self.planning_future_generation = None
+        self._set_piece_count_controls_enabled(True)
+        self.calculate_plan_button.configure(text="一键重新识别并计算拼接方案")
+        self._cancel_accept_timeout()
+        self._cancel_auto_continue()
+        self._cancel_serial_health_check()
+        self.status_parser.reset()
+        if self.serial.connected:
+            self.serial.discard_input()
+        self._reset_competition_ui()
+        self._append_log("COMPETITION STATE REFRESHED")
+        self.status.set("比赛状态已刷新；旧任务、预览、计时和串口缓存已清除，设备连接保持不变。")
+
+    def _debug_auto_plan(self) -> None:
+        if self.planning_active:
+            self._cancel_plan_calculation()
+        else:
+            self._begin_plan_calculation(None)
+
+    def _debug_fixed_plan(self, count: int) -> None:
+        if self.planning_active:
+            self._cancel_plan_calculation()
+        else:
+            self._begin_plan_calculation(count)
+
+    def _set_mode_buttons_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for button in self.mode_buttons:
+            button.configure(state=state)
+
+    def _set_competition_state(self, text: str, background: str, foreground: str) -> None:
+        self.competition_state.set(text)
+        self.competition_state_label.configure(background=background, foreground=foreground)
+
+    def _elapsed_seconds(self) -> float:
+        if self.competition_finished_elapsed is not None:
+            return self.competition_finished_elapsed
+        if self.competition_started_at is None:
+            return 0.0
+        return max(0.0, time.monotonic() - self.competition_started_at)
+
+    def _update(self) -> None:
+        super()._update()
+        elapsed = self._elapsed_seconds()
+        if self.competition_started_at is not None:
+            self.timer_text.set(format_competition_time(elapsed))
+        if self.competition_active and elapsed >= COMPETITION_LIMIT_SECONDS:
+            self.planning_active = False
+            self.planning_generation += 1
+            self._finish_competition("timeout", "超过题目规定的120秒")
+        elif (
+            self.competition_active
+            and self.competition_waiting_for_serial
+            and self.serial.connected
+        ):
+            self._append_log("COMPETITION SERIAL RECOVERED: starting execution")
+            self._start_competition_execution()
+        elif self.competition_active and not self.serial.connected:
+            if self.serial_fault_during_motion:
+                self._finish_competition("failed", "动作期间串口连接中断，状态未知")
+            else:
+                self._set_competition_state(
+                    "通信恢复中：不会发送动作", "#ffd7a1", "#6b3900"
+                )
+                self._schedule_serial_reconnect()
+
+    def _draw_image(self) -> None:
+        if self.preview is None:
+            return
+        self._draw_image_to_canvas(self.canvas)
+        self._draw_image_to_canvas(self.debug_canvas)
+
+    def _draw_image_to_canvas(self, canvas: tk.Canvas) -> None:
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if width < 2 or height < 2:
+            return
+        scale = min(width / self.preview.shape[1], height / self.preview.shape[0])
+        shown = cv2.resize(
+            self.preview,
+            (max(1, round(self.preview.shape[1] * scale)),
+             max(1, round(self.preview.shape[0] * scale))),
+            interpolation=cv2.INTER_AREA,
+        )
+        ok, png = cv2.imencode(".png", shown)
+        if not ok:
+            return
+        photo = tk.PhotoImage(data=base64.b64encode(png.tobytes()))
+        if canvas is self.canvas:
+            self.photo = photo
+        else:
+            self.debug_photo = photo
+        canvas.delete("all")
+        canvas.create_image(width // 2, height // 2, image=photo, anchor="center")
+
+    def _append_log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        line = f"[{timestamp}] {message}"
+        self.log.configure(state="normal")
+        self.log.insert(tk.END, line + "\n")
+        self.log.see(tk.END)
+        self.log.configure(state="disabled")
+        if self.run_log_path is not None:
+            try:
+                with self.run_log_path.open("a", encoding="utf-8") as stream:
+                    stream.write(line + "\n")
+            except OSError:
+                pass
+
+    def _start_run_log(self, mode: CompetitionMode) -> None:
+        RUN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_log_path = RUN_LOG_DIR / f"{stamp}_{mode.key}.log"
+
+    def _completion_signal(self) -> None:
+        for delay in (0, 250, 500):
+            self.root.after(delay, self.root.bell)
+
+    def _launch_tool(self, module: str, include_serial: bool) -> None:
+        if self.competition_active or self.waiting_for_completion:
+            messagebox.showwarning("任务正在进行", "机械任务结束前不能切换调试程序。")
+            return
+        if not messagebox.askyesno(
+            "切换调试程序",
+            "为避免摄像头或串口冲突，当前比赛界面将关闭。是否继续？",
+        ):
+            return
+        args = [sys.executable, "-m", module, "--camera", str(self.camera_index)]
+        if include_serial and self.serial_port.get().strip():
+            args.extend(["--serial", self.serial_port.get().strip()])
+        if not self.rotate_180:
+            args.append("--no-rotate-180")
+        self._release_resources()
+        subprocess.Popen(args, cwd=str(Path.cwd()))
+        self.root.destroy()
+
+    def _release_resources(self) -> None:
+        self._cancel_accept_timeout()
+        self._cancel_auto_continue()
+        self.planning_active = False
+        if self.planning_future is not None:
+            self.planning_future.cancel()
+        self.planning_executor.shutdown(wait=False, cancel_futures=True)
+        if self.capture is not None:
+            self.capture.release()
+            self.capture = None
+        self.serial.close()
+
+    def _close(self) -> None:
+        self._release_resources()
+        self.root.destroy()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--camera", type=int, default=1, help="OpenCV camera index")
+    parser.add_argument("--serial", help="CH340 serial port, e.g. COM30")
+    parser.add_argument(
+        "--no-rotate-180", action="store_true", help="use raw camera orientation"
+    )
+    args = parser.parse_args()
+    root = tk.Tk()
+    CompetitionApp(root, args.camera, args.serial, rotate_180=not args.no_rotate_180)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

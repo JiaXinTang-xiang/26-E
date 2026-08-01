@@ -2,6 +2,8 @@
 
 import struct
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from puzzle_device.calibration.gantry_protocol import (
     CMD_PICK_AND_PLACE_DUAL_ANGLE,
@@ -12,6 +14,9 @@ from puzzle_device.calibration.gantry_protocol import (
     STATUS_COMMAND_ACCEPTED,
     build_dual_angle_pick_and_place_frame,
     build_pick_and_place_frame,
+    build_serial_health_check_frame,
+    OptionalSerialPort,
+    select_ch340_port,
 )
 from puzzle_device.planning import build_execution_tasks
 
@@ -62,6 +67,62 @@ class ExecutionProtocolTest(unittest.TestCase):
         parser.reset()
         tail = bytes([0x03 ^ STATUS_COMMAND_ACCEPTED, 0x55])
         self.assertEqual(parser.feed(tail), [])
+
+    def test_serial_health_check_frame_is_invalid_without_changing_coordinates(self):
+        valid = build_pick_and_place_frame(0, 0, 0, 0)
+        health = build_serial_health_check_frame()
+        self.assertEqual(len(health), 17)
+        self.assertEqual(health[:-2], valid[:-2])
+        self.assertNotEqual(health[-2], valid[-2])
+        self.assertEqual(health[-1], valid[-1])
+
+    def test_optional_serial_rejects_send_when_disconnected(self):
+        port = OptionalSerialPort("COM_TEST")
+        with self.assertRaisesRegex(RuntimeError, "not connected"):
+            port.send(b"test")
+
+    def test_optional_serial_close_clears_handle_even_if_close_fails(self):
+        port = OptionalSerialPort("COM_TEST")
+        handle = Mock()
+        handle.close.side_effect = OSError("device removed")
+        port._serial = handle
+        with self.assertRaises(OSError):
+            port.close()
+        self.assertIsNone(port._serial)
+
+    def test_optional_serial_connect_closes_stale_handle_first(self):
+        port = OptionalSerialPort("COM_TEST")
+        stale = Mock()
+        port._serial = stale
+        opened = Mock(is_open=True)
+        serial_module = Mock()
+        serial_module.Serial.return_value = opened
+        with patch.dict("sys.modules", {"serial": serial_module}):
+            port.connect()
+        stale.close.assert_called_once()
+        opened.reset_input_buffer.assert_called_once()
+        opened.reset_output_buffer.assert_called_once()
+
+    def test_ch340_selection_prefers_existing_configured_port(self):
+        ports = [
+            SimpleNamespace(device="COM8", description="USB-SERIAL CH340", hwid=""),
+            SimpleNamespace(device="COM30", description="CH340", hwid="USB VID:PID=1A86"),
+        ]
+        self.assertEqual(select_ch340_port(ports, "COM8"), "COM8")
+
+    def test_ch340_selection_follows_single_ch340_after_com_change(self):
+        ports = [
+            SimpleNamespace(device="COM31", description="USB-SERIAL CH340", hwid=""),
+            SimpleNamespace(device="COM5", description="Bluetooth Link", hwid=""),
+        ]
+        self.assertEqual(select_ch340_port(ports, "COM30"), "COM31")
+
+    def test_ch340_selection_does_not_guess_between_multiple_devices(self):
+        ports = [
+            SimpleNamespace(device="COM30", description="CH340", hwid=""),
+            SimpleNamespace(device="COM31", description="CH341", hwid=""),
+        ]
+        self.assertIsNone(select_ch340_port(ports, "COM8"))
 
     def test_plan_rotation_maps_around_135_degree_home(self):
         document = {

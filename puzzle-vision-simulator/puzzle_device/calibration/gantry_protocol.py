@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from typing import Iterable
 
 
 FRAME_HEADER = 0xAA
@@ -23,6 +24,50 @@ STATUS_NAMES = {
     STATUS_COMMAND_REJECTED: "命令校验失败或参数越界",
     STATUS_ACTION_FAILED: "正常运动计数停止，动作已中止",
 }
+
+
+def build_serial_health_check_frame() -> bytes:
+    """Build a deliberately rejected frame that cannot start motor motion."""
+    frame = bytearray(build_pick_and_place_frame(0, 0, 0, 0))
+    frame[-2] ^= 0xFF
+    return bytes(frame)
+
+
+def _port_search_text(port_info) -> str:
+    return " ".join(
+        str(getattr(port_info, name, "") or "")
+        for name in ("device", "description", "manufacturer", "hwid", "product")
+    ).upper()
+
+
+def select_ch340_port(
+    ports: Iterable, preferred_port: str | None = None
+) -> str | None:
+    """Select a CH340/USB-serial device, preferring the configured COM port."""
+    keywords = ("CH340", "CH341", "USB-SERIAL", "USB SERIAL", "QINHENG", "WCH")
+    values = list(ports)
+    preferred = (preferred_port or "").strip().upper()
+    if preferred:
+        for port_info in values:
+            if (
+                str(getattr(port_info, "device", "")).upper() == preferred
+                and any(keyword in _port_search_text(port_info) for keyword in keywords)
+            ):
+                return str(port_info.device)
+    matches = [
+        str(port_info.device)
+        for port_info in values
+        if any(keyword in _port_search_text(port_info) for keyword in keywords)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def discover_ch340_port(preferred_port: str | None = None) -> str | None:
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return None
+    return select_ch340_port(list_ports.comports(), preferred_port)
 
 
 def build_pick_and_place_frame(
@@ -127,11 +172,12 @@ class OptionalSerialPort:
 
     @property
     def connected(self) -> bool:
-        return self._serial is not None
+        return self._serial is not None and bool(getattr(self._serial, "is_open", True))
 
     def connect(self) -> None:
         if not self.port:
             return
+        self.close()
         try:
             import serial
         except ImportError as exc:
@@ -143,25 +189,28 @@ class OptionalSerialPort:
         self._serial.reset_output_buffer()
 
     def send(self, frame: bytes) -> None:
-        if self._serial is not None:
-            written = self._serial.write(frame)
-            self._serial.flush()
-            if written != len(frame):
-                raise RuntimeError(f"serial write incomplete: {written}/{len(frame)} bytes")
+        if not self.connected:
+            raise RuntimeError("serial port is not connected")
+        written = self._serial.write(frame)
+        self._serial.flush()
+        if written != len(frame):
+            raise RuntimeError(f"serial write incomplete: {written}/{len(frame)} bytes")
 
     def discard_input(self) -> None:
         """Discard status bytes left over from an earlier command."""
-        if self._serial is not None:
+        if self.connected:
             self._serial.reset_input_buffer()
 
     def read_available(self) -> bytes:
         """Return pending controller bytes without blocking the GUI."""
-        if self._serial is None:
+        if not self.connected:
             return b""
         waiting = self._serial.in_waiting
         return self._serial.read(waiting) if waiting else b""
 
     def close(self) -> None:
         if self._serial is not None:
-            self._serial.close()
-            self._serial = None
+            try:
+                self._serial.close()
+            finally:
+                self._serial = None

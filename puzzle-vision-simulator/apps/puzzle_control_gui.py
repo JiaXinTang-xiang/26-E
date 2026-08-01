@@ -24,6 +24,8 @@ from puzzle_device.calibration.gantry_protocol import (
     STATUS_COMMAND_REJECTED,
     STATUS_NAMES,
     build_dual_angle_pick_and_place_frame,
+    build_serial_health_check_frame,
+    discover_ch340_port,
 )
 from puzzle_device.planning import build_execution_tasks
 from puzzle_device.calibration.manual_calibration import PixelToGantryCalibration
@@ -57,6 +59,8 @@ CALIBRATION_PATHS = (
 )
 SERVO_HOME_ANGLE = 135
 SUPPORTED_PIECE_COUNTS = (1, 2, 3, 4)
+SERIAL_RECONNECT_DELAYS_MS = (500, 1000, 2000, 3000, 5000)
+SERIAL_HEALTH_CHECK_TIMEOUT_MS = 1500
 
 
 class PuzzleControlApp:
@@ -83,6 +87,12 @@ class PuzzleControlApp:
         self.tx_bytes = 0
         self.rx_bytes = 0
         self.accept_rx_start = 0
+        self.serial_reconnect_job = None
+        self.serial_reconnect_attempt = 0
+        self.serial_reconnect_enabled = True
+        self.serial_fault_during_motion = False
+        self.serial_health_check_pending = False
+        self.serial_health_check_job = None
         self.preview = None
         self.photo = None
         self.current_camera_frame = None
@@ -240,12 +250,21 @@ class PuzzleControlApp:
         ttk.Label(footer, textvariable=self.status, foreground="#174c75").pack(side="left")
 
     def _connect_serial(self) -> None:
+        self._cancel_serial_reconnect()
+        self._cancel_serial_health_check()
+        if self.waiting_for_completion:
+            messagebox.showwarning(
+                "动作状态未确认",
+                "当前块已经发送，不能直接重新连接并继续自动流程。"
+                "请先观察机械完成并回零，再人工确认或解除等待。",
+            )
+            return
         try:
             self.serial.close()
             self.serial.port = self.serial_port.get().strip() or None
             self.serial.connect()
         except Exception as exc:
-            messagebox.showerror("串口连接失败", str(exc))
+            self._handle_serial_fault(exc, "连接")
             return
         if self.serial.connected:
             self.status_parser.reset()
@@ -255,22 +274,179 @@ class PuzzleControlApp:
             self.waiting_for_accept = False
             self.tx_bytes = 0
             self.rx_bytes = 0
+            self.serial_reconnect_attempt = 0
+            self.serial_fault_during_motion = False
             self._update_serial_state()
             self.controller_state.set("下位机：等待发送命令")
             self._append_log(f"OPEN {self.serial.port} @ {self.serial.baudrate}")
         else:
             self.serial_state.set("串口：未填写端口，模拟模式")
 
+    def _restart_serial_connection(self) -> None:
+        """Safely restart the PC-side serial object without resending a task."""
+        if self.waiting_for_completion:
+            messagebox.showwarning(
+                "动作状态未确认",
+                "当前块已经发送，重启串口也不能判断下位机是否仍在执行。"
+                "请先观察机械完成并回零，再到调试页人工确认或解除等待；程序不会自动重发。",
+            )
+            return
+        self.serial_reconnect_enabled = True
+        self.serial_reconnect_attempt = 0
+        self.serial.close()
+        self.serial_state.set("串口：正在重启连接…")
+        self.root.after(150, self._connect_serial)
+
+    def _refresh_serial_port(self, show_message: bool = True) -> str | None:
+        preferred = self.serial_port.get().strip() or None
+        detected = discover_ch340_port(preferred)
+        if detected is None:
+            if show_message:
+                messagebox.showwarning(
+                    "未唯一找到 CH340",
+                    "没有检测到 CH340，或同时检测到多个 USB 串口。"
+                    "请在端口输入框中手动填写正确的 COM 号。",
+                )
+            return None
+        if detected != preferred:
+            self._append_log(f"SERIAL PORT UPDATED: {preferred or '--'} -> {detected}")
+        self.serial_port.set(detected)
+        self.serial.port = detected
+        self.serial_state.set(f"串口：已检测到 {detected}，尚未连接")
+        if show_message:
+            self.status.set(f"已找到 CH340：{detected}。可以连接或运行安全通信自检。")
+        return detected
+
+    def _start_serial_health_check(self) -> None:
+        """Verify the STM32 return path using a checksum-invalid, motion-safe frame."""
+        if self.waiting_for_completion or self.auto_run_enabled:
+            messagebox.showwarning("机械正在执行", "动作期间不能发送通信自检帧。")
+            return
+        if not self.serial.connected:
+            self._connect_serial()
+        if not self.serial.connected:
+            return
+        try:
+            self.serial.discard_input()
+            self.status_parser.reset()
+            frame = build_serial_health_check_frame()
+            self.serial.send(frame)
+        except Exception as exc:
+            self._handle_serial_fault(exc, "通信自检发送")
+            return
+        self.serial_health_check_pending = True
+        self.tx_bytes += len(frame)
+        self._update_serial_state()
+        self.controller_state.set("下位机：通信自检中，等待安全的 B2 返回")
+        self._append_log(f"TX HEALTH CHECK: {frame.hex(' ').upper()}")
+        self._cancel_serial_health_check()
+        self.serial_health_check_pending = True
+        self.serial_health_check_job = self.root.after(
+            SERIAL_HEALTH_CHECK_TIMEOUT_MS, self._serial_health_check_timeout
+        )
+
+    def _serial_health_check_timeout(self) -> None:
+        self.serial_health_check_job = None
+        if not self.serial_health_check_pending:
+            return
+        self.serial_health_check_pending = False
+        self.controller_state.set("下位机：通信自检超时，未收到 B2")
+        self.status.set("串口已打开但下位机没有返回，请检查 TX/RX、共地或复位 STM32。")
+        self._append_log("HEALTH CHECK TIMEOUT: no B2")
+        self.serial.close()
+        self.serial_state.set("串口：通信自检失败，连接已关闭")
+        self._schedule_serial_reconnect()
+
+    def _cancel_serial_health_check(self) -> None:
+        if self.serial_health_check_job is not None:
+            self.root.after_cancel(self.serial_health_check_job)
+            self.serial_health_check_job = None
+        self.serial_health_check_pending = False
+
+    def _handle_serial_fault(self, exc: Exception, operation: str) -> None:
+        was_moving = self.waiting_for_completion or self.auto_run_enabled
+        self.serial.close()
+        self.status_parser.reset()
+        self._cancel_accept_timeout()
+        self._cancel_auto_continue()
+        self._cancel_serial_health_check()
+        self.auto_run_enabled = False
+        self.serial_fault_during_motion = self.serial_fault_during_motion or was_moving
+        self.serial_state.set(f"串口：{operation}失败，连接已关闭")
+        self._append_log(f"SERIAL {operation.upper()} ERROR: {exc}")
+        if was_moving:
+            self.controller_state.set("下位机：通信中断，当前机械动作状态未知")
+            self.status.set(
+                "动作期间串口中断：已停止发送后续任务，绝不会自动重发当前块。"
+                "请观察机械完成和回零后再人工恢复。"
+            )
+        else:
+            self.controller_state.set("下位机：串口断开，等待自动重连")
+            self.status.set("串口通信失败，程序将在空闲状态自动尝试重连。")
+            self._schedule_serial_reconnect()
+
+    def _schedule_serial_reconnect(self) -> None:
+        if (
+            not self.serial_reconnect_enabled
+            or self.serial_reconnect_job is not None
+            or self.serial.connected
+            or self.waiting_for_completion
+            or self.serial_fault_during_motion
+            or not self.serial_port.get().strip()
+        ):
+            return
+        index = min(self.serial_reconnect_attempt, len(SERIAL_RECONNECT_DELAYS_MS) - 1)
+        delay = SERIAL_RECONNECT_DELAYS_MS[index]
+        self.serial_reconnect_attempt += 1
+        self.serial_state.set(
+            f"串口：{delay / 1000:.1f}s 后自动重连（第 {self.serial_reconnect_attempt} 次）"
+        )
+        self.serial_reconnect_job = self.root.after(delay, self._attempt_serial_reconnect)
+
+    def _attempt_serial_reconnect(self) -> None:
+        self.serial_reconnect_job = None
+        if self.waiting_for_completion or self.serial_fault_during_motion:
+            return
+        try:
+            configured = self.serial_port.get().strip() or None
+            detected = discover_ch340_port(configured)
+            if detected is not None and detected != configured:
+                self.serial_port.set(detected)
+                self._append_log(f"SERIAL PORT CHANGED: {configured or '--'} -> {detected}")
+            self.serial.port = detected or configured
+            self.serial.connect()
+        except Exception as exc:
+            self.serial.close()
+            self._append_log(f"SERIAL RECONNECT FAILED: {exc}")
+            self._schedule_serial_reconnect()
+            return
+        if self.serial.connected:
+            self.status_parser.reset()
+            self.serial_reconnect_attempt = 0
+            self._update_serial_state()
+            self.controller_state.set("下位机：串口已自动重连，建议运行通信自检")
+            self.status.set("串口已自动恢复；开始比赛前建议点击“安全通信自检”。")
+            self._append_log(f"SERIAL RECONNECTED: {self.serial.port}")
+
+    def _cancel_serial_reconnect(self) -> None:
+        if self.serial_reconnect_job is not None:
+            self.root.after_cancel(self.serial_reconnect_job)
+            self.serial_reconnect_job = None
+
     def _start_plan_calculation(self) -> None:
         if self.planning_active:
             self._cancel_plan_calculation()
             return
+        self._begin_plan_calculation(self.expected_piece_count.get())
+
+    def _begin_plan_calculation(self, expected_count: int | None) -> bool:
+        """Start planning for a fixed count, or auto-detect one to four pieces."""
         if self.waiting_for_completion or self.auto_run_enabled:
             messagebox.showwarning("机械正在执行", "请等待当前任务完成并停止自动执行后再重新计算。")
-            return
+            return False
         if self.capture is None:
             messagebox.showerror("相机不可用", "没有可用的 USB 相机画面，无法重新识别。")
-            return
+            return False
         try:
             config = self._load_planning_config()
             roi = self._load_planning_roi()
@@ -280,12 +456,11 @@ class PuzzleControlApp:
                 raise ValueError(f"背景差分模式缺少背景图：{BACKGROUND_PATH}")
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             messagebox.showerror("无法开始计算", str(exc))
-            return
+            return False
 
-        expected_count = self.expected_piece_count.get()
-        if expected_count not in SUPPORTED_PIECE_COUNTS:
+        if expected_count is not None and expected_count not in SUPPORTED_PIECE_COUNTS:
             messagebox.showerror("碎片数量无效", "本轮碎片数只能选择 1、2、3 或 4。")
-            return
+            return False
         self.planning_config = config
         self.planning_roi = roi
         self.planning_calibration = calibration
@@ -293,17 +468,23 @@ class PuzzleControlApp:
         self.planning_background = background
         self.planning_expected_piece_count = expected_count
         self.planning_generation += 1
-        self.planning_tracker.reset(f"等待稳定识别 {expected_count} 块碎片")
+        count_text = "1–4 块碎片" if expected_count is None else f"{expected_count} 块碎片"
+        self.planning_tracker.reset(f"等待稳定识别 {count_text}")
         self.planning_active = True
         self.planning_next_time = 0.0
         self.preview = None
         self._set_piece_count_controls_enabled(False)
         self.calculate_plan_button.configure(text="停止本次识别计算")
-        self.plan_state.set(f"方案：正在稳定识别 {expected_count} 块碎片…")
+        self.plan_state.set(f"方案：正在稳定识别 {count_text}…")
         self.status.set(
-            f"请保持 {expected_count} 块碎片和相机静止；稳定采样后会自动计算并加载方案。"
+            f"请保持 {count_text} 和相机静止；稳定采样后会自动计算并加载方案。"
         )
-        self._append_log(f"PLAN START: detecting {expected_count} stable pieces")
+        self._append_log(
+            "PLAN START: auto-detecting 1-4 stable pieces"
+            if expected_count is None
+            else f"PLAN START: detecting {expected_count} stable pieces"
+        )
+        return True
 
     def _cancel_plan_calculation(self) -> None:
         self.planning_active = False
@@ -402,6 +583,12 @@ class PuzzleControlApp:
         )
         return "solve", document, preview
 
+    def _planning_progress_text(self, piece_count: int) -> tuple[str, str]:
+        return (
+            f"方案：{piece_count} 块已稳定，正在计算拼接方案…",
+            "识别已经稳定，正在计算轮廓匹配、目标位置和抓取/放置角度。",
+        )
+
     def _queue_plan_detection(self) -> None:
         if not self.planning_active or self.planning_future is not None:
             return
@@ -442,14 +629,22 @@ class PuzzleControlApp:
             self.preview = overlay
             self._draw_image()
             expected_count = self.planning_expected_piece_count
-            if expected_count not in SUPPORTED_PIECE_COUNTS:
+            if expected_count is not None and expected_count not in SUPPORTED_PIECE_COUNTS:
                 self._finish_plan_failure(ValueError("本轮碎片数量状态无效，请重新开始计算。"))
                 return
             if error is not None:
                 self.planning_tracker.reset("识别异常")
                 self.plan_state.set(f"方案：识别提示：{error}")
                 return
-            if len(pieces) != expected_count:
+            if len(pieces) not in SUPPORTED_PIECE_COUNTS:
+                self.planning_tracker.reset(
+                    f"当前识别到 {len(pieces)} 块，比赛只支持 1–4 块"
+                )
+                self.plan_state.set(
+                    f"方案：当前识别到 {len(pieces)} 块，等待有效的 1–4 块"
+                )
+                return
+            if expected_count is not None and len(pieces) != expected_count:
                 self.planning_tracker.reset(
                     f"当前识别到 {len(pieces)} 块，等待 {expected_count} 块"
                 )
@@ -458,12 +653,14 @@ class PuzzleControlApp:
                 )
                 return
             stability = self.planning_tracker.update(pieces)
-            self.plan_state.set(f"方案：{stability.reason}")
+            detected_count = len(pieces)
+            self.plan_state.set(f"方案：识别到 {detected_count} 块，{stability.reason}")
             if not stability.stable:
                 return
             averaged = self.planning_tracker.averaged_observations()
-            self.plan_state.set(f"方案：{expected_count} 块已稳定，正在计算拼接方案…")
-            self.status.set("识别已经稳定，正在计算轮廓匹配、目标位置和抓取/放置角度。")
+            plan_text, status_text = self._planning_progress_text(detected_count)
+            self.plan_state.set(plan_text)
+            self.status.set(status_text)
             self.planning_future = self.planning_executor.submit(
                 self._solve_for_control,
                 self.current_camera_frame.copy(),
@@ -514,11 +711,19 @@ class PuzzleControlApp:
         self._set_piece_count_controls_enabled(True)
         self.calculate_plan_button.configure(text="一键重新识别并计算拼接方案")
         self._append_log("PLAN COMPLETE: saved and loaded")
+        self._on_plan_ready(document, completed_count)
+
+    def _on_plan_ready(self, _document: dict, completed_count: int) -> None:
         self._load_plan(show_errors=True)
+        if not self.tasks:
+            return
         messagebox.showinfo(
             "拼接方案完成",
             f"已重新识别 {completed_count} 块碎片、计算方案并自动加载。",
         )
+
+    def _plan_geometry_is_verified(self, document: dict) -> bool:
+        return document.get("quality", {}).get("geometry_verified") is True
 
     def _finish_plan_failure(self, exc: Exception) -> None:
         self.planning_active = False
@@ -530,6 +735,16 @@ class PuzzleControlApp:
         self._append_log(f"PLAN ERROR: {exc}")
         messagebox.showerror("拼接计算失败", str(exc))
 
+    def _loaded_plan_state_text(self, document: dict, task_count: int) -> str:
+        quality = document.get("quality", {})
+        gap = float(quality.get("placement_gap_actual_mm", 0.0))
+        recovered = quality.get("recovered_size_mm", [0.0, 0.0])
+        return (
+            f"方案：已加载 {task_count} 块，恢复尺寸 "
+            f"{float(recovered[0]):.1f}×{float(recovered[1]):.1f} mm，"
+            f"安全缝 {gap:.1f} mm，坐标和舵机角度校验通过"
+        )
+
     def _load_plan(self, show_errors: bool = True) -> None:
         if self.planning_active:
             if show_errors:
@@ -538,7 +753,7 @@ class PuzzleControlApp:
         try:
             document = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
             quality = document.get("quality", {})
-            if quality.get("geometry_verified") is not True:
+            if not self._plan_geometry_is_verified(document):
                 raise ValueError("拼接方案未通过新版矩形几何校验，请回到识别界面重新计算。")
             self.tasks = build_execution_tasks(
                 document, servo_home_angle=SERVO_HOME_ANGLE,
@@ -562,11 +777,7 @@ class PuzzleControlApp:
         self.waiting_for_accept = False
         self.auto_run_enabled = False
         self._cancel_auto_continue()
-        gap = float(document.get("quality", {}).get("placement_gap_actual_mm", 0.0))
-        self.plan_state.set(
-            f"方案：已加载 {len(self.tasks)} 块，安全缝 {gap:.1f} mm，"
-            "坐标和舵机角度校验通过"
-        )
+        self.plan_state.set(self._loaded_plan_state_text(document, len(self.tasks)))
         self._update_task_state()
         self._refresh_task_list()
         self._draw_image()
@@ -611,32 +822,36 @@ class PuzzleControlApp:
         self._transmit_task(task)
 
     def _start_auto_run(self) -> None:
+        self._begin_auto_run(confirm=True)
+
+    def _begin_auto_run(self, confirm: bool) -> bool:
         if self.planning_active:
             messagebox.showwarning("正在计算方案", "请等待方案计算完成或先停止本次识别计算。")
-            return
+            return False
         if self.waiting_for_completion:
             messagebox.showwarning("当前块正在执行", "请等待当前块完成后再启动自动执行。")
-            return
+            return False
         if self.current_task_index >= len(self.tasks):
             messagebox.showinfo("任务完成", "当前拼接方案已经全部执行。")
-            return
+            return False
         if not self.serial.connected:
             messagebox.showwarning("串口未连接", "请先连接 CH340 对应的 COM 端口。")
-            return
+            return False
         remaining = len(self.tasks) - self.current_task_index
-        if not messagebox.askyesno(
+        if confirm and not messagebox.askyesno(
             "确认自动连续执行",
             f"将从 P{self.tasks[self.current_task_index].piece_id} 开始，自动连续执行"
             f"剩余 {remaining} 块。\n\n"
             "每块必须收到下位机 B1（完成并回零）才会发送下一块。"
             "执行期间请保持工作区无人、碎片位置稳定。\n\n确认开始吗？",
         ):
-            return
+            return False
         self.auto_run_enabled = True
         self._append_log(f"AUTO START: {remaining} task(s) remaining")
         self.status.set("自动连续执行已启动：等待每块 B1 后自动发送下一块。")
         self._update_task_state()
         self._transmit_task(self.tasks[self.current_task_index])
+        return True
 
     def _stop_auto_run(self) -> None:
         if not self.auto_run_enabled:
@@ -652,7 +867,7 @@ class PuzzleControlApp:
         else:
             self.status.set("自动执行已停止：后续任务需要手动发送。")
 
-    def _transmit_task(self, task) -> None:
+    def _transmit_task(self, task) -> bool:
         try:
             frame = build_dual_angle_pick_and_place_frame(
                 task.source_x, task.source_y, task.target_x, task.target_y,
@@ -663,8 +878,10 @@ class PuzzleControlApp:
             self.status_parser.reset()
             self.serial.send(frame)
         except Exception as exc:
-            messagebox.showerror("发送失败", str(exc))
-            return
+            self._handle_serial_fault(exc, "发送")
+            if not getattr(self, "competition_active", False):
+                messagebox.showerror("发送失败", str(exc))
+            return False
         self.waiting_for_completion = True
         self.waiting_for_accept = True
         self.accept_rx_start = self.rx_bytes
@@ -678,6 +895,7 @@ class PuzzleControlApp:
             f"已发送 P{task.piece_id}。请等待机械执行并回零，再人工确认完成。")
         self._cancel_accept_timeout()
         self.accept_timeout_job = self.root.after(1500, self._check_accept_status)
+        return True
 
     def _send_auto_next(self) -> None:
         self.auto_continue_job = None
@@ -736,7 +954,12 @@ class PuzzleControlApp:
         ):
             return
         self._append_log(f"MANUAL COMPLETE P{task.piece_id}: operator verified homing")
+        reconnect_after_completion = self.serial_fault_during_motion
         self._complete_current_task()
+        if reconnect_after_completion:
+            self.serial_fault_during_motion = False
+            self.serial_reconnect_attempt = 0
+            self._schedule_serial_reconnect()
 
     def _clear_wait_without_advancing(self) -> None:
         if not self.waiting_for_completion:
@@ -753,12 +976,25 @@ class PuzzleControlApp:
         self.auto_run_enabled = False
         self._cancel_auto_continue()
         self._append_log("WAIT CLEARED: task not advanced, no command sent")
+        if self.serial_fault_during_motion:
+            self.serial_fault_during_motion = False
+            self.serial_reconnect_attempt = 0
+            self._schedule_serial_reconnect()
         self._update_task_state()
         self._refresh_task_list()
         self.status.set("等待已解除，当前任务未推进；检查设备后再决定是否重新执行。")
 
     def _handle_status(self, status: int) -> None:
         self._append_log(f"STATUS {status:02X}: {STATUS_NAMES.get(status, '未知状态')}")
+        if self.serial_health_check_pending:
+            if status == STATUS_COMMAND_REJECTED:
+                self._cancel_serial_health_check()
+                self.controller_state.set("下位机：通信自检通过，双向串口正常")
+                self.status.set("安全通信自检通过；自检帧校验错误，不会启动电机。")
+                self._append_log("HEALTH CHECK PASS: B2 received")
+            else:
+                self._append_log(f"HEALTH CHECK IGNORED STATUS: {status:02X}")
+            return
         if status == STATUS_COMMAND_ACCEPTED:
             self.waiting_for_accept = False
             self._cancel_accept_timeout()
@@ -810,15 +1046,18 @@ class PuzzleControlApp:
             self.auto_run_enabled = False
             self._cancel_auto_continue()
             self.status.set("全部碎片已完成并回零。")
-            if show_dialog:
-                messagebox.showinfo("拼接执行完成", "当前方案的所有碎片均已确认完成。")
-            elif was_auto_run:
-                messagebox.showinfo("自动拼接完成", "全部碎片均已收到 B1 并完成放置。")
+            self._on_all_tasks_complete(was_auto_run, show_dialog)
         else:
             if self.auto_run_enabled:
                 self.status.set("当前块已收到 B1，准备自动发送下一块。")
             else:
                 self.status.set("当前块已确认完成，可以发送下一块。")
+
+    def _on_all_tasks_complete(self, was_auto_run: bool, show_dialog: bool) -> None:
+        if show_dialog:
+            messagebox.showinfo("拼接执行完成", "当前方案的所有碎片均已确认完成。")
+        elif was_auto_run:
+            messagebox.showinfo("自动拼接完成", "全部碎片均已收到 B1 并完成放置。")
 
     def _update_task_state(self) -> None:
         if not self.tasks:
@@ -865,12 +1104,7 @@ class PuzzleControlApp:
                 for status in self.status_parser.feed(received):
                     self._handle_status(status)
         except Exception as exc:
-            self.serial_state.set("串口：读取失败，请重新连接")
-            self._append_log(f"SERIAL ERROR: {exc}")
-            self.status.set("CH340 读取失败；当前机械动作状态未知，请不要再次发送。")
-            self.auto_run_enabled = False
-            self._cancel_auto_continue()
-            self.serial.close()
+            self._handle_serial_fault(exc, "读取")
         try:
             if self.capture is not None and (self.preview is None or self.planning_active):
                 ok, frame = self.capture.read()
@@ -918,6 +1152,8 @@ class PuzzleControlApp:
     def _close(self) -> None:
         self._cancel_accept_timeout()
         self._cancel_auto_continue()
+        self._cancel_serial_reconnect()
+        self._cancel_serial_health_check()
         self.planning_active = False
         if self.planning_future is not None:
             self.planning_future.cancel()

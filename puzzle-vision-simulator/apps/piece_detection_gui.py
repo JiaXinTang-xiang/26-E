@@ -827,8 +827,15 @@ class PieceDetectionApp:
             canvas_x1 - 8, divider_y + 8, text="拼接区", anchor="ne",
             fill="#7dff9b", font=("Sans", 11, "bold"), tags="roi_overlay",
         )
+        if self.assembly_plan is None:
+            self.main_canvas.create_text(
+                canvas_x0 + 8, divider_y + 8,
+                text="目标尺寸：拼接后自动恢复", anchor="nw",
+                fill="#7dff9b", font=("Sans", 10, "bold"), tags="roi_overlay",
+            )
+            return
         target_x, target_y, target_width, target_height = target_rectangle_pixels(
-            rectangle, self.assembly_config
+            rectangle, self.assembly_config, self.assembly_plan.target_rect_mm
         )
         self.main_canvas.create_rectangle(
             origin_x + target_x * scale,
@@ -840,7 +847,11 @@ class PieceDetectionApp:
         self.main_canvas.create_text(
             origin_x + target_x * scale + 5,
             origin_y + target_y * scale + 5,
-            text="目标 100×60 mm", anchor="nw", fill="#7dff9b",
+            text=(
+                f"目标 {self.assembly_plan.recovered_size_mm[0]:.1f}×"
+                f"{self.assembly_plan.recovered_size_mm[1]:.1f} mm"
+            ),
+            anchor="nw", fill="#7dff9b",
             font=("Sans", 10, "bold"), tags="roi_overlay",
         )
 
