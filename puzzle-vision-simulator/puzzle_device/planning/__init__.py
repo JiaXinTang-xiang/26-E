@@ -3,6 +3,7 @@
 from .assembly import (
     AssemblyConfig,
     AssemblyPlan,
+    legacy_4_0_config,
     solve_assembly,
     solve_self_assembly,
     solve_textured_assembly,
@@ -14,6 +15,7 @@ from .execution import ExecutionTask, build_execution_tasks
 __all__ = [
     "AssemblyConfig",
     "AssemblyPlan",
+    "legacy_4_0_config",
     "build_movement_plan",
     "draw_assembly_preview",
     "ExecutionTask",

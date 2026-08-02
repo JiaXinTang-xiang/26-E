@@ -34,6 +34,7 @@ from puzzle_device.planning import (
     build_transfer_plan,
     draw_assembly_preview,
     draw_transfer_preview,
+    legacy_4_0_config,
     solve_self_assembly,
     solve_textured_assembly,
 )
@@ -558,6 +559,15 @@ class CompetitionApp(PuzzleControlApp):
                 draw_piece_observations(frame, pieces), pieces, assembly, config
             )
             return "solve", document, preview
+        if (
+            self.competition_active
+            and self.competition_mode is not None
+            and self.competition_mode.key == "requirement_2_1"
+        ):
+            legacy_config = legacy_4_0_config(config)
+            return super()._solve_for_control(
+                frame, pieces, roi, calibration, calibration_name, legacy_config
+            )
         return super()._solve_for_control(
             frame, pieces, roi, calibration, calibration_name, config
         )

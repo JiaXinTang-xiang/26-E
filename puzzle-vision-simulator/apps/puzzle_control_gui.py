@@ -49,6 +49,9 @@ PLAN_PATH = Path("output/assembly_plan.json")
 PREVIEW_PATH = Path("output/assembly_preview.png")
 FAILED_PLAN_PATH = Path("output/assembly_plan_failed.json")
 FAILED_PREVIEW_PATH = Path("output/assembly_preview_failed.png")
+FAILED_VISION_PATH = Path("output/assembly_vision_failed.json")
+FAILED_VISION_FRAME_PATH = Path("output/assembly_vision_failed.png")
+FAILED_VISION_OVERLAY_PATH = Path("output/assembly_vision_failed_overlay.png")
 BACKGROUND_PATH = Path("data/local/empty_work_area.png")
 DEFAULT_CONFIG_PATH = Path("configs/vision_detection.json")
 LOCAL_CONFIG_PATH = Path("configs/local/vision_detection.json")
@@ -592,12 +595,37 @@ class PuzzleControlApp:
         calibration_name: str,
         config: AssemblyConfig,
     ) -> tuple[str, dict, np.ndarray]:
-        assembly = solve_assembly(
-            [np.asarray(piece.polygon, dtype=np.float64) for piece in pieces],
-            roi,
-            config,
-            require_upper_half=True,
-        )
+        try:
+            assembly = solve_assembly(
+                [np.asarray(piece.polygon, dtype=np.float64) for piece in pieces],
+                roi,
+                config,
+                require_upper_half=True,
+            )
+        except (RuntimeError, ValueError, cv2.error) as exc:
+            try:
+                FAILED_VISION_PATH.parent.mkdir(parents=True, exist_ok=True)
+                FAILED_VISION_PATH.write_text(
+                    json.dumps(
+                        {
+                            "format": "puzzle-device.failed-vision-plan.v1",
+                            "error": str(exc),
+                            "roi": [int(value) for value in roi],
+                            "pieces": [piece.to_dict() for piece in pieces],
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                cv2.imwrite(str(FAILED_VISION_FRAME_PATH), frame)
+                cv2.imwrite(
+                    str(FAILED_VISION_OVERLAY_PATH),
+                    draw_piece_observations(frame, pieces),
+                )
+            except (OSError, TypeError, ValueError, cv2.error):
+                pass
+            raise
 
         def to_pulse(point: tuple[float, float]) -> tuple[int, int]:
             x, y = calibration.predict_pulse(*point)
