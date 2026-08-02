@@ -64,8 +64,12 @@ SERVO_HOME_ANGLE = 135
 SUPPORTED_PIECE_COUNTS = (1, 2, 3, 4)
 SERIAL_RECONNECT_DELAYS_MS = (500, 1000, 2000, 3000, 5000)
 SERIAL_HEALTH_CHECK_TIMEOUT_MS = 1500
+# CH340/Windows can report a transient ClearCommError while the STM32 is
+# driving motors. Keep the port alive for a few seconds and continue polling;
+# never resend the in-flight command during this recovery window.
 SERIAL_READ_RETRY_LIMIT = 3
-SERIAL_READ_RETRY_DELAY_MS = 120
+SERIAL_MOTION_READ_RETRY_LIMIT = 40
+SERIAL_READ_RETRY_DELAY_MS = 125
 
 
 class PuzzleControlApp:
@@ -389,6 +393,9 @@ class PuzzleControlApp:
                 "动作期间串口中断：已停止发送后续任务，绝不会自动重发当前块。"
                 "请观察机械完成和回零后再人工恢复。"
             )
+            # 允许后台恢复 PC 侧串口句柄，但保留 waiting_for_completion，
+            # 这样重连成功后不会误判当前动作已完成，也不会重发当前帧。
+            self._schedule_serial_reconnect()
         else:
             self.controller_state.set("下位机：串口断开，等待自动重连")
             self.status.set("串口通信失败，程序将在空闲状态自动尝试重连。")
@@ -401,7 +408,12 @@ class PuzzleControlApp:
     def _handle_serial_read_error(self, exc: Exception) -> None:
         """Tolerate brief CH340/Windows read glitches before declaring a disconnect."""
         self.serial_read_error_count += 1
-        if self.serial_read_error_count < SERIAL_READ_RETRY_LIMIT:
+        retry_limit = (
+            SERIAL_MOTION_READ_RETRY_LIMIT
+            if getattr(self, "waiting_for_completion", False)
+            else SERIAL_READ_RETRY_LIMIT
+        )
+        if self.serial_read_error_count < retry_limit:
             self.serial_read_retry_after = time.monotonic() + (
                 SERIAL_READ_RETRY_DELAY_MS / 1000.0
             )
@@ -410,7 +422,7 @@ class PuzzleControlApp:
             )
             self.status.set(
                 f"串口读取瞬时异常，第 {self.serial_read_error_count}/"
-                f"{SERIAL_READ_RETRY_LIMIT - 1} 次重试；未发送任何新命令。"
+                f"{retry_limit - 1} 次重试；继续等待当前动作，不发送新命令。"
             )
             self._append_log(
                 f"SERIAL READ RETRY {self.serial_read_error_count}/"
@@ -419,13 +431,12 @@ class PuzzleControlApp:
             return
         self._handle_serial_fault(exc, "读取")
 
+
     def _schedule_serial_reconnect(self) -> None:
         if (
             not self.serial_reconnect_enabled
             or self.serial_reconnect_job is not None
             or self.serial.connected
-            or self.waiting_for_completion
-            or self.serial_fault_during_motion
             or not self.serial_port.get().strip()
         ):
             return
@@ -439,7 +450,7 @@ class PuzzleControlApp:
 
     def _attempt_serial_reconnect(self) -> None:
         self.serial_reconnect_job = None
-        if self.waiting_for_completion or self.serial_fault_during_motion:
+        if self.serial.connected:
             return
         try:
             configured = self.serial_port.get().strip() or None
@@ -459,8 +470,14 @@ class PuzzleControlApp:
             self._reset_serial_read_retries()
             self.serial_reconnect_attempt = 0
             self._update_serial_state()
-            self.controller_state.set("下位机：串口已自动重连，建议运行通信自检")
-            self.status.set("串口已自动恢复；开始比赛前建议点击“安全通信自检”。")
+            if self.waiting_for_completion or self.serial_fault_during_motion:
+                self.controller_state.set("下位机：串口已恢复，当前动作状态仍待确认")
+                self.status.set(
+                    "串口已恢复；不会重发当前块。请确认机械完成并回零后再继续。"
+                )
+            else:
+                self.controller_state.set("下位机：串口已自动重连，建议运行通信自检")
+                self.status.set("串口已自动恢复；开始比赛前建议点击“安全通信自检”。")
             self._append_log(f"SERIAL RECONNECTED: {self.serial.port}")
 
     def _cancel_serial_reconnect(self) -> None:

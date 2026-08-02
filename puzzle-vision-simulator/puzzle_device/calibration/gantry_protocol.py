@@ -205,7 +205,14 @@ class OptionalSerialPort:
         """Return pending controller bytes without blocking the GUI."""
         if not self.connected:
             return b""
-        waiting = self._serial.in_waiting
+        try:
+            waiting = self._serial.in_waiting
+        except (OSError, PermissionError):
+            # On Windows/CH340, ClearCommError (used by ``in_waiting``) can
+            # briefly fail while the USB driver is changing state.  A zero
+            # timeout read does not require that status query and can still
+            # retrieve a pending B0/B1 frame.
+            return self._serial.read(64)
         return self._serial.read(waiting) if waiting else b""
 
     def close(self) -> None:
