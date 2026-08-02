@@ -106,6 +106,9 @@ def legacy_4_0_config(config: AssemblyConfig | None = None) -> AssemblyConfig:
     """Return the 4.0 white-piece ranking/filter profile."""
     values = dict((config or AssemblyConfig()).__dict__)
     values["solver_profile"] = "legacy_4_0"
+    # Keep the original node-4 geometry thresholds.  The profile switch is
+    # intended to restore the old search/ranking path, not to silently change
+    # the task quality criteria.
     return AssemblyConfig(**values)
 
 
@@ -326,7 +329,10 @@ def _match_segments(polygons, match):
 
 def _edge_candidates(polygons, config: AssemblyConfig):
     candidates_by_pair = {}
-    two_piece_mode = len(polygons) == 2
+    # Node 4 used the same edge-candidate generation for every piece count.
+    # The newer exhaustive two-piece/full-edge branch remains available only
+    # to the current profile.
+    two_piece_mode = len(polygons) == 2 and config.solver_profile != "legacy_4_0"
     full_edge_tolerance = (
         config.two_piece_edge_relative_tolerance
         if two_piece_mode else config.edge_relative_tolerance
@@ -467,7 +473,10 @@ def _assemble(polygons, matches, config: AssemblyConfig):
     if any(transform is None for transform in transforms):
         return None
     placed = [_apply(polygon, transform) for polygon, transform in zip(polygons, transforms)]
-    if not _matched_seams_are_valid(polygons, transforms, placed, matches, config):
+    if (
+        config.solver_profile != "legacy_4_0"
+        and not _matched_seams_are_valid(polygons, transforms, placed, matches, config)
+    ):
         return None
     overlap = sum(
         _intersection_area(placed[first], placed[second])

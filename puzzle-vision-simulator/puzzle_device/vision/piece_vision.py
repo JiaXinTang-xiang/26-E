@@ -41,6 +41,7 @@ class DetectionConfig:
     min_edge_length_px: float = 3.0
     min_edge_length_ratio: float = 0.025
     minimum_pick_clearance_px: float = 8.0
+    polygon_vertex_strategy: str = "current"
 
     def validate(self) -> None:
         if self.segmentation_method not in {"background", "white_hsv", "brightness"}:
@@ -72,6 +73,8 @@ class DetectionConfig:
             raise ValueError("invalid minimum edge length")
         if self.minimum_pick_clearance_px < 0:
             raise ValueError("minimum pick clearance cannot be negative")
+        if self.polygon_vertex_strategy not in {"current", "legacy_4"}:
+            raise ValueError("unknown polygon vertex strategy")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -246,6 +249,15 @@ def _polygon_from_contour(
         config.polygon_epsilon_max,
         config.polygon_epsilon_steps,
     )
+    ratios = sorted(candidates, key=lambda value: abs(value - preferred))
+    if config.polygon_vertex_strategy == "legacy_4":
+        for ratio in ratios:
+            approx = cv2.approxPolyDP(contour, ratio * perimeter, True).reshape(-1, 2)
+            approx = _remove_tiny_edges(approx.astype(np.float64), perimeter, config)
+            if config.min_vertices <= len(approx) <= config.max_vertices:
+                return order_clockwise(approx)
+        return None
+
     valid = []
     contour_area = abs(float(cv2.contourArea(contour)))
     minimum_edge = max(
@@ -253,7 +265,6 @@ def _polygon_from_contour(
         config.min_edge_length_ratio * perimeter,
     )
     seen = set()
-    ratios = sorted(candidates, key=lambda value: abs(value - preferred))
     for ratio in ratios:
         approx = cv2.approxPolyDP(contour, ratio * perimeter, True).reshape(-1, 2)
         approx = _remove_tiny_edges(approx.astype(np.float64), perimeter, config)

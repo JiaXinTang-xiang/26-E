@@ -7,11 +7,10 @@ import argparse
 import base64
 from datetime import datetime
 from pathlib import Path
-import subprocess
-import sys
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
+import json
 
 import cv2
 
@@ -42,6 +41,7 @@ from puzzle_device.vision.piece_vision import draw_piece_observations
 
 
 RUN_LOG_DIR = Path("output/competition_runs")
+ROI_PATH = Path("configs/local/a4_roi.json")
 
 
 class CompetitionApp(PuzzleControlApp):
@@ -61,6 +61,7 @@ class CompetitionApp(PuzzleControlApp):
         self.competition_result = "idle"
         self.competition_waiting_for_serial = False
         self.last_competition_mode: CompetitionMode | None = None
+        self.debug_planning_method = tk.StringVar(master=root, value="white")
         self.run_log_path: Path | None = None
         self._allow_plan_loading = False
         super().__init__(root, camera_index, serial_port, rotate_180)
@@ -111,6 +112,17 @@ class CompetitionApp(PuzzleControlApp):
         ttk.Label(
             footer, textvariable=self.status, foreground="#174c75", wraplength=1320
         ).pack(side="left", fill="x", expand=True)
+
+    def _configure_planning_vision_profile(self, config) -> None:
+        if (
+            (
+                self.competition_active
+                and self.competition_mode is not None
+                and self.competition_mode.key == "requirement_2_1"
+            )
+            or (not self.competition_active and self.debug_planning_method.get() == "white")
+        ):
+            config.polygon_vertex_strategy = "legacy_4"
 
     def _build_competition_page(self, page: ttk.Frame) -> None:
         page.columnconfigure(0, weight=5)
@@ -222,6 +234,12 @@ class CompetitionApp(PuzzleControlApp):
         )
         self.debug_canvas.pack(fill="both", expand=True)
         self.debug_canvas.bind("<Configure>", lambda _event: self._draw_image())
+        self.debug_canvas.bind("<ButtonPress-1>", self._roi_press)
+        self.debug_canvas.bind("<B1-Motion>", self._roi_drag)
+        self.debug_canvas.bind("<ButtonRelease-1>", self._roi_release)
+        self.roi_selecting = False
+        self.roi_drag_start = None
+        self.roi_drag_current = None
 
         log_box = ttk.LabelFrame(left, text="带时间戳的运行与通信日志", padding=5)
         log_box.pack(fill="x", pady=(8, 0))
@@ -285,6 +303,19 @@ class CompetitionApp(PuzzleControlApp):
 
         plan_box = ttk.LabelFrame(right, text="识别与方案调试（不会自动执行）", padding=8)
         plan_box.pack(fill="x", pady=(8, 0))
+        ttk.Label(plan_box, text="调试拼接算法").pack(anchor="w")
+        ttk.Radiobutton(
+            plan_box,
+            text="2（1）普通白色碎片 / Git 4.0",
+            variable=self.debug_planning_method,
+            value="white",
+        ).pack(anchor="w", pady=(3, 0))
+        ttk.Radiobutton(
+            plan_box,
+            text="2（2）扑克牌 / 几何 + Lab 接缝",
+            variable=self.debug_planning_method,
+            value="card",
+        ).pack(anchor="w")
         self.piece_count_buttons = []
         self.calculate_plan_button = ttk.Button(
             plan_box, text="自动判断1～4块并计算方案", command=self._debug_auto_plan
@@ -334,34 +365,22 @@ class CompetitionApp(PuzzleControlApp):
         tools = ttk.LabelFrame(right, text="专用调试工具", padding=8)
         tools.pack(fill="x", pady=(8, 0))
         ttk.Button(
-            tools, text="视觉识别与参数调试", command=lambda: self._launch_tool(
-                "apps.piece_detection_gui", include_serial=False
-            )
+            tools,
+            text="采集当前空桌面背景",
+            command=self._capture_empty_background,
         ).pack(fill="x")
         ttk.Button(
             tools,
-            text="背景颜色调试（橙色A4 / 白色碎片）",
-            command=lambda: self._launch_tool(
-                "apps.piece_vision_debug", include_serial=False
-            ),
-        ).pack(fill="x", pady=(6, 0))
-        ttk.Button(
-            tools, text="相机到龙门架标定", command=lambda: self._launch_tool(
-                "apps.manual_calibration_gui", include_serial=True
-            )
-        ).pack(fill="x", pady=(6, 0))
-        ttk.Button(
-            tools, text="OpenCV分阶段视觉调试", command=lambda: self._launch_tool(
-                "apps.piece_vision_debug", include_serial=False
-            )
+            text="重新框选 A4 ROI",
+            command=self._arm_roi_selection,
         ).pack(fill="x", pady=(6, 0))
         ttk.Label(
             tools,
-            text="打开专用工具时会关闭本界面，避免摄像头或串口被两个程序同时占用。",
+            text="请先移开所有碎片，再点击；背景会保存到 data/local/empty_work_area.png。",
             foreground="#8a3b00",
             wraplength=380,
             justify="left",
-        ).pack(fill="x", pady=(6, 0))
+        ).pack(fill="x", pady=(4, 0))
 
     def _update_debug_scroll_region(self, _event=None) -> None:
         self.debug_controls_canvas.configure(
@@ -383,6 +402,137 @@ class CompetitionApp(PuzzleControlApp):
         if event.delta:
             self.debug_controls_canvas.yview_scroll(-int(event.delta / 120), "units")
 
+    def _capture_empty_background(self) -> None:
+        """Capture a fresh rotated empty-work-area frame for background subtraction."""
+        if self.competition_active or self.planning_active or self.waiting_for_completion:
+            messagebox.showwarning(
+                "无法采集背景",
+                "当前正在比赛或识别执行，请先停止当前流程后再采集空桌面背景。",
+            )
+            return
+        if self.capture is None:
+            messagebox.showerror("相机不可用", "当前没有打开 USB 相机，无法采集背景。")
+            return
+        if not messagebox.askyesno(
+            "确认采集空桌面背景",
+            "请确认 A4 工作区内没有任何碎片、吸头或其他遮挡物。\n\n现在采集当前画面作为背景吗？",
+        ):
+            return
+        ok, frame = self.capture.read()
+        if not ok or frame is None:
+            messagebox.showerror("采集失败", "相机没有返回有效画面，请检查相机连接后重试。")
+            return
+        if self.rotate_180:
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        try:
+            BACKGROUND_PATH.parent.mkdir(parents=True, exist_ok=True)
+            if not cv2.imwrite(str(BACKGROUND_PATH), frame):
+                raise OSError("cv2.imwrite returned false")
+        except (OSError, cv2.error) as exc:
+            messagebox.showerror("保存背景失败", f"无法保存背景图：{exc}")
+            return
+        self.current_camera_frame = frame.copy()
+        self.preview = frame.copy()
+        self.planning_background = frame.copy()
+        self._draw_image()
+        self._append_log(
+            f"BACKGROUND CAPTURED: {BACKGROUND_PATH} / {frame.shape[1]}x{frame.shape[0]}"
+        )
+        self.status.set(
+            f"空桌面背景已保存：{BACKGROUND_PATH}。后续背景差分识别会自动使用新背景。"
+        )
+        messagebox.showinfo("背景采集完成", f"已保存空桌面背景：\n{BACKGROUND_PATH}")
+
+    def _arm_roi_selection(self) -> None:
+        if self.current_camera_frame is None:
+            messagebox.showwarning("没有画面", "当前还没有可用的相机画面。")
+            return
+        self.roi_selecting = True
+        self.roi_drag_start = None
+        self.roi_drag_current = None
+        self.debug_canvas.configure(cursor="crosshair")
+        self.status.set("请在左侧相机画面拖拽框选完整 A4，松开鼠标后自动保存。")
+
+    def _debug_canvas_to_image(self, x: int, y: int):
+        if self.current_camera_frame is None:
+            return None
+        scale = getattr(self, "debug_display_scale", 0.0)
+        origin = getattr(self, "debug_display_origin", (0, 0))
+        if scale <= 0:
+            return None
+        px = (x - origin[0]) / scale
+        py = (y - origin[1]) / scale
+        height, width = self.current_camera_frame.shape[:2]
+        if not (0 <= px < width and 0 <= py < height):
+            return None
+        return float(px), float(py)
+
+    def _roi_press(self, event: tk.Event) -> None:
+        if not self.roi_selecting:
+            return
+        point = self._debug_canvas_to_image(event.x, event.y)
+        if point is not None:
+            self.roi_drag_start = point
+            self.roi_drag_current = point
+            self._draw_image()
+
+    def _roi_drag(self, event: tk.Event) -> None:
+        if not self.roi_selecting or self.roi_drag_start is None:
+            return
+        point = self._debug_canvas_to_image(event.x, event.y)
+        if point is not None:
+            self.roi_drag_current = point
+            self._draw_image()
+
+    def _roi_release(self, event: tk.Event) -> None:
+        if not self.roi_selecting or self.roi_drag_start is None:
+            return
+        point = self._debug_canvas_to_image(event.x, event.y) or self.roi_drag_current
+        self.roi_selecting = False
+        self.debug_canvas.configure(cursor="")
+        if point is None:
+            return
+        x0, y0 = self.roi_drag_start
+        x1, y1 = point
+        x = round(min(x0, x1))
+        y = round(min(y0, y1))
+        width = round(abs(x1 - x0))
+        height = round(abs(y1 - y0))
+        self.roi_drag_start = None
+        self.roi_drag_current = None
+        frame_height, frame_width = self.current_camera_frame.shape[:2]
+        if width < 100 or height < 100 or x < 0 or y < 0 or x + width > frame_width or y + height > frame_height:
+            messagebox.showwarning("ROI 无效", "请重新框选完整的 A4 区域。")
+            self._draw_image()
+            return
+        try:
+            ROI_PATH.parent.mkdir(parents=True, exist_ok=True)
+            ROI_PATH.write_text(json.dumps({
+                "format": "puzzle-device.a4-roi.v1",
+                "camera_rotation_degrees": 180 if self.rotate_180 else 0,
+                "roi": {"x": x, "y": y, "width": width, "height": height},
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.planning_roi = (x, y, width, height)
+        except (OSError, TypeError, ValueError) as exc:
+            messagebox.showerror("ROI 保存失败", str(exc))
+            return
+        # ROI 改变后，旧方案中的像素目标点和脉冲目标点都可能失效。
+        # 清掉当前内存任务，避免用户误把旧的 1（1）方案直接发送到下位机。
+        self.tasks = []
+        self.current_task_index = 0
+        self.waiting_for_completion = False
+        self.waiting_for_accept = False
+        self.auto_run_enabled = False
+        self._cancel_auto_continue()
+        self.plan_state.set("方案：ROI 已更新，请重新识别并计算方案")
+        self.task_state.set("任务：等待按题目重新计算")
+        self._refresh_task_list()
+        self._draw_image()
+        self._append_log(f"ROI UPDATED: x={x}, y={y}, w={width}, h={height}")
+        self.status.set(
+            f"A4 ROI 已保存：x={x}, y={y}, w={width}, h={height}；旧方案已作废，请重新计算 1（1）。"
+        )
+
     def _load_plan(self, show_errors: bool = True) -> None:
         if not self._allow_plan_loading:
             return
@@ -393,9 +543,12 @@ class CompetitionApp(PuzzleControlApp):
         if document.get("operation_mode") == "transfer_only":
             return quality.get("transfer_only") is True and quality.get("geometry_verified") is True
         if (
-            self.competition_active
-            and self.competition_mode is not None
-            and self.competition_mode.planning_method == "texture"
+            (
+                self.competition_active
+                and self.competition_mode is not None
+                and self.competition_mode.planning_method == "texture"
+            )
+            or (not self.competition_active and self.debug_planning_method.get() == "card")
         ):
             return (
                 quality.get("geometry_verified") is True
@@ -560,9 +713,12 @@ class CompetitionApp(PuzzleControlApp):
             )
             return "solve", document, preview
         if (
-            self.competition_active
-            and self.competition_mode is not None
-            and self.competition_mode.key == "requirement_2_1"
+            (
+                self.competition_active
+                and self.competition_mode is not None
+                and self.competition_mode.key == "requirement_2_1"
+            )
+            or (not self.competition_active and self.debug_planning_method.get() == "white")
         ):
             legacy_config = legacy_4_0_config(config)
             return super()._solve_for_control(
@@ -846,10 +1002,17 @@ class CompetitionApp(PuzzleControlApp):
         if width < 2 or height < 2:
             return
         scale = min(width / self.preview.shape[1], height / self.preview.shape[0])
+        shown_width = max(1, round(self.preview.shape[1] * scale))
+        shown_height = max(1, round(self.preview.shape[0] * scale))
+        origin = ((width - shown_width) / 2.0, (height - shown_height) / 2.0)
+        # 鼠标框选 ROI 时需要把画布坐标反算回原始图像坐标。
+        # 只记录调试画布的缩放和留白位置，不影响比赛主画布。
+        if getattr(self, "debug_canvas", None) is canvas:
+            self.debug_display_scale = scale
+            self.debug_display_origin = origin
         shown = cv2.resize(
             self.preview,
-            (max(1, round(self.preview.shape[1] * scale)),
-             max(1, round(self.preview.shape[0] * scale))),
+            (shown_width, shown_height),
             interpolation=cv2.INTER_AREA,
         )
         ok, png = cv2.imencode(".png", shown)
@@ -861,7 +1024,40 @@ class CompetitionApp(PuzzleControlApp):
         else:
             self.debug_photo = photo
         canvas.delete("all")
-        canvas.create_image(width // 2, height // 2, image=photo, anchor="center")
+        canvas.create_image(origin[0], origin[1], image=photo, anchor="nw")
+
+        # 调试页叠加 ROI。保存的 ROI 用蓝色，当前拖拽中的 ROI 用黄色虚线。
+        if getattr(self, "debug_canvas", None) is canvas:
+            roi = None
+            if self.roi_selecting and self.roi_drag_start and self.roi_drag_current:
+                x0, y0 = self.roi_drag_start
+                x1, y1 = self.roi_drag_current
+                roi = (
+                    min(x0, x1), min(y0, y1),
+                    abs(x1 - x0), abs(y1 - y0),
+                    "#ffd400", (8, 5),
+                )
+            elif getattr(self, "planning_roi", None):
+                x, y, roi_width, roi_height = self.planning_roi
+                roi = (x, y, roi_width, roi_height, "#39a9ff", None)
+            if roi is not None:
+                x, y, roi_width, roi_height, color, dash = roi
+                coords = (
+                    origin[0] + x * scale,
+                    origin[1] + y * scale,
+                    origin[0] + (x + roi_width) * scale,
+                    origin[1] + (y + roi_height) * scale,
+                )
+                options = {"outline": color, "width": 2, "tags": "roi_overlay"}
+                if dash:
+                    options["dash"] = dash
+                canvas.create_rectangle(*coords, **options)
+                canvas.create_text(
+                    coords[0] + 6, coords[1] + 6,
+                    text="A4 ROI", anchor="nw", fill=color,
+                    font=("Microsoft YaHei UI", 10, "bold"),
+                    tags="roi_overlay",
+                )
 
     def _append_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -885,24 +1081,6 @@ class CompetitionApp(PuzzleControlApp):
     def _completion_signal(self) -> None:
         for delay in (0, 250, 500):
             self.root.after(delay, self.root.bell)
-
-    def _launch_tool(self, module: str, include_serial: bool) -> None:
-        if self.competition_active or self.waiting_for_completion:
-            messagebox.showwarning("任务正在进行", "机械任务结束前不能切换调试程序。")
-            return
-        if not messagebox.askyesno(
-            "切换调试程序",
-            "为避免摄像头或串口冲突，当前比赛界面将关闭。是否继续？",
-        ):
-            return
-        args = [sys.executable, "-m", module, "--camera", str(self.camera_index)]
-        if include_serial and self.serial_port.get().strip():
-            args.extend(["--serial", self.serial_port.get().strip()])
-        if not self.rotate_180:
-            args.append("--no-rotate-180")
-        self._release_resources()
-        subprocess.Popen(args, cwd=str(Path.cwd()))
-        self.root.destroy()
 
     def _release_resources(self) -> None:
         self._cancel_accept_timeout()

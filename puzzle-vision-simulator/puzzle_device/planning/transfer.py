@@ -42,40 +42,81 @@ def _intersection_area(first: np.ndarray, second: np.ndarray) -> float:
     return float(np.count_nonzero(masks[0] & masks[1]))
 
 
+def _rotate_about(point: np.ndarray, center: np.ndarray, angle_deg: float) -> np.ndarray:
+    """Rotate image points around *center*; positive angles are clockwise."""
+    angle = np.deg2rad(float(angle_deg))
+    matrix = np.array(
+        [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]],
+        dtype=np.float64,
+    )
+    return (np.asarray(point, dtype=np.float64) - center) @ matrix.T + center
+
+
+def _canonical_rotation(angle_deg: float) -> float:
+    """Return a servo-friendly equivalent in the range [-180, 180]."""
+    value = ((float(angle_deg) + 180.0) % 360.0) - 180.0
+    return 180.0 if abs(value + 180.0) < 1e-6 else value
+
+
 def _fixed_assignment(
     pieces: list,
     fixed_points_px: np.ndarray,
     roi: tuple[int, int, int, int],
     split_y_px: float,
-) -> tuple[tuple[int, ...], list[np.ndarray]]:
+) -> tuple[tuple[int, ...], list[np.ndarray], list[np.ndarray], list[float]]:
     roi_x, roi_y, roi_width, roi_height = roi
     best = None
     for assignment in itertools.permutations(range(len(pieces))):
-        polygons = []
-        outside = 0
-        for fixed_point, piece_index in zip(fixed_points_px, assignment):
-            piece = pieces[piece_index]
-            polygon = np.asarray(piece.polygon, dtype=np.float64)
-            target = polygon + fixed_point - np.asarray(piece.pick_point, dtype=np.float64)
-            polygons.append(target)
-            outside += int(np.any(
-                (target[:, 0] < roi_x)
-                | (target[:, 0] > roi_x + roi_width)
-                | (target[:, 1] < split_y_px)
-                | (target[:, 1] > roi_y + roi_height)
-            ))
-        overlap = sum(
-            _intersection_area(polygons[first], polygons[second])
-            for first, second in itertools.combinations(range(len(polygons)), 2)
-        )
-        score = outside * 1_000_000.0 + overlap
-        if best is None or score < best[0]:
-            best = (score, assignment, polygons, outside, overlap)
+        for angle_choices in itertools.product((0.0, 90.0, 180.0, 270.0), repeat=len(pieces)):
+            polygons = []
+            fitted_points = []
+            rotations = []
+            outside = 0
+            rotation_penalty = 0.0
+            fitting_penalty = 0.0
+            for fixed_point, piece_index, angle_deg in zip(
+                fixed_points_px, assignment, angle_choices
+            ):
+                piece = pieces[piece_index]
+                pick = np.asarray(piece.pick_point, dtype=np.float64)
+                polygon = _rotate_about(
+                    np.asarray(piece.polygon, dtype=np.float64), pick, angle_deg
+                )
+                delta = polygon - pick
+                # The nominal point is the intended drop location.  If the
+                # detected safe pick point is close to an edge, clamp only the
+                # target point needed to keep the whole rigid polygon inside
+                # the lower A4 region.
+                min_point = np.array((roi_x, split_y_px), dtype=np.float64) - delta.min(axis=0)
+                max_point = np.array((roi_x + roi_width, roi_y + roi_height), dtype=np.float64) - delta.max(axis=0)
+                fitted = np.minimum(
+                    np.maximum(np.asarray(fixed_point, dtype=np.float64), min_point),
+                    max_point,
+                )
+                target = polygon + fitted - pick
+                fitted_points.append(fitted)
+                rotations.append(_canonical_rotation(angle_deg))
+                fitting_penalty += float(np.linalg.norm(fitted - fixed_point)) * 0.10
+                polygons.append(target)
+                outside += int(np.any(
+                    (target[:, 0] < roi_x)
+                    | (target[:, 0] > roi_x + roi_width)
+                    | (target[:, 1] < split_y_px)
+                    | (target[:, 1] > roi_y + roi_height)
+                ))
+                rotation_penalty += abs(_canonical_rotation(angle_deg)) * 0.01
+            overlap = sum(
+                _intersection_area(polygons[first], polygons[second])
+                for first, second in itertools.combinations(range(len(polygons)), 2)
+            )
+            score = outside * 1_000_000.0 + overlap + rotation_penalty + fitting_penalty
+            if best is None or score < best[0]:
+                best = (score, assignment, polygons, outside, overlap, fitted_points, rotations)
     if best is None or best[3] > 0:
         raise ValueError("4个固定放置点无法容纳当前碎片，请检查ROI和碎片摆放")
     if best[4] > 1.0:
         raise ValueError(f"4个固定放置点会造成碎片重叠 {best[4]:.0f} px²")
-    return tuple(best[1]), best[2]
+    return tuple(best[1]), best[2], best[5], best[6]
 
 
 def build_transfer_plan(
@@ -101,18 +142,19 @@ def build_transfer_plan(
     fixed_points_px = a4_to_global_pixels(
         np.asarray(FIXED_DROP_POINTS_A4_MM, dtype=np.float64), roi, cfg
     )
-    assignment, target_polygons = _fixed_assignment(
+    assignment, target_polygons, fitted_points, rotations = _fixed_assignment(
         pieces, fixed_points_px, roi, split_y_px
     )
     records = []
     ordered_targets: list[np.ndarray] = []
-    for sequence, (fixed_point, piece_index, target_polygon) in enumerate(
-        zip(fixed_points_px, assignment, target_polygons), start=1
+    for sequence, (fixed_point, piece_index, target_polygon, rotation_deg) in enumerate(
+        zip(fitted_points, assignment, target_polygons, rotations), start=1
     ):
         piece = pieces[piece_index]
         source_center = np.asarray(piece.center, dtype=np.float64)
         source_pick = np.asarray(piece.pick_point, dtype=np.float64)
-        target_center = source_center + fixed_point - source_pick
+        rotated_center = _rotate_about(source_center, source_pick, rotation_deg)
+        target_center = rotated_center + fixed_point - source_pick
         source_pulse = pulse_mapper(tuple(source_pick))
         target_pulse = pulse_mapper(tuple(fixed_point))
         records.append({
@@ -127,8 +169,8 @@ def build_transfer_plan(
             "target_pick_pulse": None if target_pulse is None else list(target_pulse),
             "target_polygon_px": [_xy(point) for point in target_polygon],
             "source_angle_deg": round(float(piece.pca_angle_deg), 3),
-            "target_angle_deg": round(float(piece.pca_angle_deg), 3),
-            "rotation_deg": 0.0,
+            "target_angle_deg": round(float(piece.pca_angle_deg + rotation_deg), 3),
+            "rotation_deg": round(float(rotation_deg), 3),
         })
         ordered_targets.append(target_polygon)
 
@@ -150,7 +192,9 @@ def build_transfer_plan(
             "piece_count": len(records),
             "fixed_drop_points_a4_mm": [list(point) for point in FIXED_DROP_POINTS_A4_MM],
             "fixed_drop_points_px": [_xy(point) for point in fixed_points_px],
-            "pose_preserved": True,
+            "fitted_drop_points_px": [_xy(point) for point in fitted_points],
+            "pose_preserved": False,
+            "rotation_candidates_deg": [0.0, 90.0, 180.0, -90.0],
         },
         "pieces": records,
     }

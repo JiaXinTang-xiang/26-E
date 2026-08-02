@@ -484,6 +484,11 @@ class PuzzleControlApp:
             return False
         try:
             config = self._load_planning_config()
+            # CompetitionApp may select a solver-specific vision profile after
+            # loading the shared configuration. The base GUI keeps the current
+            # strategy unchanged.
+            if hasattr(self, "_configure_planning_vision_profile"):
+                self._configure_planning_vision_profile(config)
             roi = self._load_planning_roi()
             calibration, calibration_name = self._load_planning_calibration()
             background = cv2.imread(str(BACKGROUND_PATH), cv2.IMREAD_COLOR)
@@ -813,6 +818,18 @@ class PuzzleControlApp:
         try:
             document = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
             quality = document.get("quality", {})
+            # A saved movement plan contains camera-pixel coordinates.  Do not
+            # reload it after the operator has changed the A4 ROI, otherwise
+            # requirement 1（1）could send the old fixed drop points.
+            saved_roi = document.get("full_a4_roi_px")
+            if saved_roi is not None and ROI_PATH.exists():
+                roi_document = json.loads(ROI_PATH.read_text(encoding="utf-8"))
+                current_roi = roi_document.get("roi", {})
+                current_roi = [
+                    int(current_roi[key]) for key in ("x", "y", "width", "height")
+                ]
+                if [int(value) for value in saved_roi] != current_roi:
+                    raise ValueError("当前 A4 ROI 已改变，请重新识别并计算方案")
             if not self._plan_geometry_is_verified(document):
                 raise ValueError("拼接方案未通过新版矩形几何校验，请回到识别界面重新计算。")
             self.tasks = build_execution_tasks(

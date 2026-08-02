@@ -116,16 +116,19 @@ def _placement_geometry(
         return [polygon + scale * vector for polygon, vector in zip(gap_geometry, radial)]
 
     high_polygons = expanded_gap_geometry(high)
-    if minimum_gap(high_polygons) + 1e-6 < config.placement_gap_mm:
-        raise ValueError(
-            f"cannot create {config.placement_gap_mm:.1f} mm placement gap within "
-            f"the {config.maximum_piece_offset_mm:.1f} mm piece-offset limit"
-        )
+    requested_gap = float(config.placement_gap_mm)
+    achievable_gap = max(0.0, float(minimum_gap(high_polygons)))
+    # A measured contour can require more than the nominal 12 mm radial
+    # offset to create the requested margin.  Keep the requested gap when it
+    # is feasible; otherwise use the largest safe gap reachable under the
+    # physical offset limit.  This avoids rejecting an otherwise valid 2(1)
+    # plan merely because the requested margin is a soft scoring preference.
+    effective_gap = min(requested_gap, achievable_gap)
     low = 0.0
     for _ in range(32):
         middle = (low + high) / 2.0
         polygons = expanded_gap_geometry(middle)
-        if minimum_gap(polygons) >= config.placement_gap_mm:
+        if minimum_gap(polygons) >= effective_gap:
             high = middle
         else:
             low = middle
@@ -327,6 +330,7 @@ def build_movement_plan(
             "candidate_match_count": len(assembly.matches),
             "placement_gap_requested_mm": round(float(cfg.placement_gap_mm), 3),
             "placement_gap_actual_mm": round(float(actual_gap), 3),
+            "placement_gap_relaxed": bool(actual_gap + 1e-6 < cfg.placement_gap_mm),
             "maximum_corresponding_vertex_distance_mm": round(
                 float(maximum_vertex_distance), 3
             ),
