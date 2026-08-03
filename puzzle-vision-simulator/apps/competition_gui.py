@@ -7,12 +7,26 @@ import argparse
 import base64
 from datetime import datetime
 from pathlib import Path
+import sys
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 import json
 
 import cv2
+
+
+# ---------------------------------------------------------------------------
+# platform-adaptive CJK-friendly UI font
+# ---------------------------------------------------------------------------
+def _ui_font(size: int, bold: bool = False) -> tuple:
+    """Return a platform-appropriate font spec with CJK glyph support."""
+    weight = "bold" if bold else "normal"
+    if sys.platform.startswith("win"):
+        return ("Microsoft YaHei UI", size, weight)
+    # Linux / macOS — fall back to tkinter default (still CJK-capable on
+    # most modern systems with locale-aware fontconfig).
+    return ("", size, weight)
 
 from apps.puzzle_control_gui import PuzzleControlApp
 from puzzle_device.calibration.gantry_protocol import (
@@ -82,10 +96,10 @@ class CompetitionApp(PuzzleControlApp):
         style = ttk.Style()
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        style.configure("CompetitionTitle.TLabel", font=("Microsoft YaHei UI", 18, "bold"))
+        style.configure("CompetitionTitle.TLabel", font=_ui_font(18, bold=True))
         style.configure("Timer.TLabel", font=("Consolas", 32, "bold"), foreground="#0b4f6c")
-        style.configure("Mode.TButton", font=("Microsoft YaHei UI", 15, "bold"), padding=(12, 15))
-        style.configure("Danger.TButton", font=("Microsoft YaHei UI", 11, "bold"), padding=8)
+        style.configure("Mode.TButton", font=_ui_font(15, bold=True), padding=(12, 15))
+        style.configure("Danger.TButton", font=_ui_font(11, bold=True), padding=8)
 
         header = ttk.Frame(self.root, padding=(14, 8))
         header.pack(fill="x")
@@ -148,7 +162,7 @@ class CompetitionApp(PuzzleControlApp):
             textvariable=self.competition_state,
             background="#d9e7ef",
             foreground="#12384a",
-            font=("Microsoft YaHei UI", 12, "bold"),
+            font=_ui_font(12, bold=True),
             padx=8,
             pady=7,
         )
@@ -267,6 +281,8 @@ class CompetitionApp(PuzzleControlApp):
         self.debug_controls_canvas.bind("<Configure>", self._resize_debug_controls)
         self.debug_controls_canvas.bind("<Enter>", self._enable_debug_mousewheel)
         self.debug_controls_canvas.bind("<Leave>", self._disable_debug_mousewheel)
+        self.debug_controls_canvas.bind("<Button-4>", self._scroll_debug_controls)
+        self.debug_controls_canvas.bind("<Button-5>", self._scroll_debug_controls)
 
         serial_box = ttk.LabelFrame(right, text="设备连接", padding=8)
         serial_box.pack(fill="x")
@@ -394,13 +410,30 @@ class CompetitionApp(PuzzleControlApp):
 
     def _enable_debug_mousewheel(self, _event=None) -> None:
         self.root.bind_all("<MouseWheel>", self._scroll_debug_controls)
+        self.root.bind_all("<Button-4>", self._scroll_debug_controls)
+        self.root.bind_all("<Button-5>", self._scroll_debug_controls)
 
     def _disable_debug_mousewheel(self, _event=None) -> None:
         self.root.unbind_all("<MouseWheel>")
+        self.root.unbind_all("<Button-4>")
+        self.root.unbind_all("<Button-5>")
 
     def _scroll_debug_controls(self, event: tk.Event) -> None:
-        if event.delta:
-            self.debug_controls_canvas.yview_scroll(-int(event.delta / 120), "units")
+        step = self._mousewheel_step(event)
+        if step:
+            self.debug_controls_canvas.yview_scroll(step, "units")
+
+    @staticmethod
+    def _mousewheel_step(event: tk.Event) -> int:
+        """Return -1 (up) or +1 (down) across Windows (<MouseWheel>) and Linux (<Button-4/5>)."""
+        delta = getattr(event, "delta", 0)
+        if delta:
+            return -1 if delta > 0 else 1
+        if event.num == 4:
+            return -1
+        if event.num == 5:
+            return 1
+        return 0
 
     def _capture_empty_background(self) -> None:
         """Capture a fresh rotated empty-work-area frame for background subtraction."""
@@ -1055,7 +1088,7 @@ class CompetitionApp(PuzzleControlApp):
                 canvas.create_text(
                     coords[0] + 6, coords[1] + 6,
                     text="A4 ROI", anchor="nw", fill=color,
-                    font=("Microsoft YaHei UI", 10, "bold"),
+                    font=_ui_font(10, bold=True),
                     tags="roi_overlay",
                 )
 
@@ -1102,7 +1135,7 @@ class CompetitionApp(PuzzleControlApp):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera", type=int, default=1, help="OpenCV camera index")
-    parser.add_argument("--serial", help="CH340 serial port, e.g. COM30")
+    parser.add_argument("--serial", help="CH340 serial port (COM30 on Windows, /dev/ttyUSB0 on Linux)")
     parser.add_argument(
         "--no-rotate-180", action="store_true", help="use raw camera orientation"
     )

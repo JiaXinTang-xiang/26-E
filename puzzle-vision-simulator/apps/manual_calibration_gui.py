@@ -120,6 +120,8 @@ class ManualCalibrationApp:
                 controls_window, width=event.width),
         )
         self.root.bind_all("<MouseWheel>", self._on_controls_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self._on_controls_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_controls_mousewheel, add="+")
 
         movement = ttk.LabelFrame(controls, text="一条取放标定任务", padding=12)
         movement.pack(fill="x")
@@ -198,10 +200,23 @@ class ManualCalibrationApp:
             canvas.winfo_rootx() <= pointer_x < canvas.winfo_rootx() + canvas.winfo_width()
             and canvas.winfo_rooty() <= pointer_y < canvas.winfo_rooty() + canvas.winfo_height()
         )
-        if not inside or event.delta == 0:
+        step = self._mousewheel_step(event)
+        if not inside or step == 0:
             return None
-        canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        canvas.yview_scroll(step, "units")
         return "break"
+
+    @staticmethod
+    def _mousewheel_step(event: tk.Event) -> int:
+        """Return -1 (up) or +1 (down) across Windows (<MouseWheel>) and Linux (<Button-4/5>)."""
+        delta = getattr(event, "delta", 0)
+        if delta:
+            return -1 if delta > 0 else 1
+        if event.num == 4:
+            return -1
+        if event.num == 5:
+            return 1
+        return 0
 
     @staticmethod
     def _coordinate_row(parent: ttk.LabelFrame, label: str, variable: tk.StringVar, row: int) -> None:
@@ -565,7 +580,7 @@ class ManualCalibrationApp:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera", type=int, default=0, help="OpenCV camera index")
-    parser.add_argument("--serial", help="optional serial port, e.g. COM5")
+    parser.add_argument("--serial", help="optional serial port (COM5 on Windows, /dev/ttyUSB0 on Linux)")
     parser.add_argument(
         "--no-rotate-180", action="store_true",
         help="use the camera's raw orientation instead of the default 180-degree rotation",

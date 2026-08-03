@@ -183,6 +183,8 @@ class PieceDetectionApp:
         )
         self.controls_pane = controls_pane
         self.root.bind_all("<MouseWheel>", self._on_controls_mousewheel, add="+")
+        self.root.bind_all("<Button-4>", self._on_controls_mousewheel, add="+")
+        self.root.bind_all("<Button-5>", self._on_controls_mousewheel, add="+")
 
         images = ttk.Panedwindow(image_pane, orient="vertical")
         images.pack(fill="both", expand=True)
@@ -325,7 +327,21 @@ class PieceDetectionApp:
             and top <= event.y_root < top + pane.winfo_height()
         ):
             return
-        self.controls_canvas.yview_scroll(-int(event.delta / 120), "units")
+        step = self._mousewheel_step(event)
+        if step:
+            self.controls_canvas.yview_scroll(step, "units")
+
+    @staticmethod
+    def _mousewheel_step(event: tk.Event) -> int:
+        """Return -1 (up) or +1 (down) across Windows (<MouseWheel>) and Linux (<Button-4/5>)."""
+        delta = getattr(event, "delta", 0)
+        if delta:
+            return -1 if delta > 0 else 1
+        if event.num == 4:
+            return -1
+        if event.num == 5:
+            return 1
+        return 0
 
     @staticmethod
     def _parameter_row(parent: ttk.LabelFrame, label: str, variable: tk.StringVar,

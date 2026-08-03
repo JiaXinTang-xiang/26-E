@@ -317,7 +317,7 @@ class PuzzleControlApp:
                 messagebox.showwarning(
                     "未唯一找到 CH340",
                     "没有检测到 CH340，或同时检测到多个 USB 串口。"
-                    "请在端口输入框中手动填写正确的 COM 号。",
+                    "请在端口输入框中手动填写正确的串口号（如 /dev/ttyUSB0、COM30）。",
                 )
             return None
         if detected != preferred:
@@ -1263,7 +1263,7 @@ class PuzzleControlApp:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera", type=int, default=1, help="OpenCV camera index")
-    parser.add_argument("--serial", help="CH340 serial port, e.g. COM32")
+    parser.add_argument("--serial", help="CH340 serial port (COM32 on Windows, /dev/ttyUSB0 on Linux)")
     parser.add_argument("--no-rotate-180", action="store_true",
                         help="use the raw camera orientation")
     args = parser.parse_args()

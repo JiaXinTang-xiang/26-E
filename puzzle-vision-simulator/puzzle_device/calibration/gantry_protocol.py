@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import struct
 from typing import Iterable
 
@@ -67,6 +68,13 @@ def discover_ch340_port(preferred_port: str | None = None) -> str | None:
         from serial.tools import list_ports
     except ImportError:
         return None
+    # When the user explicitly named a port that exists on the filesystem
+    # but wasn't enumerated by list_ports (common on Jetson with custom udev
+    # rules naming devices like /dev/ttyCH341USB0), trust the user's choice.
+    if preferred_port:
+        preferred_path = Path(preferred_port)
+        if preferred_path.exists():
+            return str(preferred_path)
     return select_ch340_port(list_ports.comports(), preferred_port)
 
 

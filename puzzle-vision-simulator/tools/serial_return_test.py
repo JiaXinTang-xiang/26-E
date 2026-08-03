@@ -29,7 +29,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Send an invalid command and wait for the STM32 B2 response."
     )
-    parser.add_argument("--serial", required=True, help="CH340 port, for example COM30")
+    parser.add_argument("--serial", required=True, help="CH340 port (e.g. COM30 on Windows, /dev/ttyUSB0 on Linux)")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--timeout", type=float, default=2.0)
     parser.add_argument(

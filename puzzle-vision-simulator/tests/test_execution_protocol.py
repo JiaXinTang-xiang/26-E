@@ -138,6 +138,13 @@ class ExecutionProtocolTest(unittest.TestCase):
         ]
         self.assertEqual(select_ch340_port(ports, "COM8"), "COM8")
 
+    def test_ch340_selection_prefers_linux_port(self):
+        ports = [
+            SimpleNamespace(device="/dev/ttyUSB0", description="USB-SERIAL CH340", hwid=""),
+            SimpleNamespace(device="/dev/ttyUSB1", description="CH341", hwid=""),
+        ]
+        self.assertEqual(select_ch340_port(ports, "/dev/ttyUSB0"), "/dev/ttyUSB0")
+
     def test_ch340_selection_follows_single_ch340_after_com_change(self):
         ports = [
             SimpleNamespace(device="COM31", description="USB-SERIAL CH340", hwid=""),
@@ -145,12 +152,26 @@ class ExecutionProtocolTest(unittest.TestCase):
         ]
         self.assertEqual(select_ch340_port(ports, "COM30"), "COM31")
 
+    def test_ch340_selection_follows_linux_port_change(self):
+        ports = [
+            SimpleNamespace(device="/dev/ttyUSB1", description="QINHENG CH340", hwid=""),
+            SimpleNamespace(device="/dev/ttyACM0", description="Modem", hwid=""),
+        ]
+        self.assertEqual(select_ch340_port(ports, "/dev/ttyUSB0"), "/dev/ttyUSB1")
+
     def test_ch340_selection_does_not_guess_between_multiple_devices(self):
         ports = [
             SimpleNamespace(device="COM30", description="CH340", hwid=""),
             SimpleNamespace(device="COM31", description="CH341", hwid=""),
         ]
         self.assertIsNone(select_ch340_port(ports, "COM8"))
+
+    def test_ch340_selection_does_not_guess_between_multiple_linux_devices(self):
+        ports = [
+            SimpleNamespace(device="/dev/ttyUSB0", description="CH340", hwid=""),
+            SimpleNamespace(device="/dev/ttyUSB1", description="CH341", hwid=""),
+        ]
+        self.assertIsNone(select_ch340_port(ports, "/dev/ttyUSB2"))
 
     def test_plan_rotation_maps_around_135_degree_home(self):
         document = {
