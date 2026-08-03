@@ -12,6 +12,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from puzzle_device.vision.cuda_ops import (
+    _Fallback,
+    _check_cuda,
+    segment_pieces_gpu,
+)
+
 
 @dataclass
 class DetectionConfig:
@@ -165,24 +171,43 @@ def _border_pixels(lab: np.ndarray, fraction: float) -> np.ndarray:
     ])
 
 
-def _color_distance(image: np.ndarray, reference: np.ndarray) -> np.ndarray:
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
-    ref_lab = cv2.cvtColor(reference, cv2.COLOR_BGR2LAB).astype(np.float32)
-    diff = lab - ref_lab
-    return np.sqrt(np.mean(diff * diff, axis=2)).clip(0, 255).astype(np.uint8)
-
-
 def segment_pieces(
     image: np.ndarray,
     background: np.ndarray | None = None,
     config: DetectionConfig | None = None,
 ) -> np.ndarray:
-    """Return a binary piece mask using an empty frame or border color model."""
+    """Return a binary piece mask using an empty frame or border color model.
+
+    When a CUDA device is available the common background-subtraction path
+    chains blur → Lab convert → threshold → morphology on the GPU to
+    minimise kernel-launch and transfer overhead.  Other segmentation
+    methods and the no-background fallback run on the CPU.
+    """
     if image is None or image.ndim != 3 or image.shape[2] != 3:
         raise ValueError("image must be a non-empty BGR image")
     cfg = config or DetectionConfig()
     cfg.validate()
 
+    # -- try composite GPU pipeline (background subtraction only) -----------
+    # GPU kernel-launch overhead dominates on small frames; only use it
+    # when the image area exceeds ~0.5 MPix where the per-pixel savings
+    # outweigh the upload/download cost.
+    if (
+        cfg.segmentation_method == "background"
+        and _check_cuda()
+        and image.size >= 500_000  # >0.5 Mpix
+    ):
+        try:
+            return segment_pieces_gpu(
+                image, background,
+                blur_size=max(1, cfg.gaussian_blur_size | 1),
+                color_distance_threshold=cfg.color_distance_threshold,
+                morph_size=cfg.morphology_size,
+            )
+        except _Fallback:
+            pass  # fall through to CPU below
+
+    # -- CPU path -----------------------------------------------------------
     blur_size = max(1, cfg.gaussian_blur_size | 1)
     blurred = cv2.GaussianBlur(image, (blur_size, blur_size), 0)
     if cfg.segmentation_method == "white_hsv":
@@ -232,6 +257,14 @@ def segment_pieces(
     filled = np.zeros_like(mask)
     cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
     return filled
+
+
+def _color_distance(image: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Euclidean Lab colour distance between two BGR images (CPU)."""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    ref = cv2.cvtColor(reference, cv2.COLOR_BGR2LAB).astype(np.float32)
+    diff = lab - ref
+    return np.sqrt(np.mean(diff * diff, axis=2)).clip(0, 255).astype(np.uint8)
 
 
 def _polygon_from_contour(
