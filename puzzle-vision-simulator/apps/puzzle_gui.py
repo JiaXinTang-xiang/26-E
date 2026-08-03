@@ -15,6 +15,7 @@ import numpy as np
 
 from puzzle_device.simulation import puzzle_sim as sim
 from mujoco_sim.sync_bridge import MuJoCoBridge
+from puzzle_device.paths import OUTPUT_DIR
 
 
 class PuzzleGUI:
@@ -493,7 +494,7 @@ class PuzzleGUI:
         test_seed = self.seed.get() + self.batch_index
         try:
             self.batch_errors.append(sim.run_once(
-                test_seed, Path("output"), save=False, piece_count=self.piece_count.get()))
+                test_seed, OUTPUT_DIR, save=False, piece_count=self.piece_count.get()))
         except Exception:
             self.batch_failures += 1
         self.batch_index += 1
@@ -511,7 +512,7 @@ class PuzzleGUI:
             return
         try:
             sim.run_once(
-                self.seed.get(), Path(folder), save=True, piece_count=self.piece_count.get())
+                    self.seed.get(), Path(folder), save=True, piece_count=self.piece_count.get())
             self.status.set(f"本次结果已导出到：{folder}")
             messagebox.showinfo("导出完成", f"图片与 transforms.json 已保存到：\n{folder}")
         except Exception as exc:

@@ -9,8 +9,16 @@ data/raw/
 data/background/
 data/annotations/
 data/calibration/
-configs/local/
+configs/local/*
 *.npz
+
+# The calibrated deployment profile is machine-specific, but is required on
+# the Jetson target. Keep temporary click drafts and debug settings ignored;
+# commit the stable runtime profile explicitly.
+!configs/local/
+!configs/local/a4_roi.json
+!configs/local/calibration.json
+!configs/local/vision_detection.json
 
 # PyInstaller 构建产物
 build/

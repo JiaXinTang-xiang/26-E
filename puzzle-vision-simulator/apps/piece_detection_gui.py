@@ -35,20 +35,18 @@ from puzzle_device.vision.piece_vision import (
     save_detection_config,
 )
 from puzzle_device.vision.stability import PieceStabilityTracker
+from puzzle_device.paths import CONFIG_DIR, LOCAL_CONFIG_DIR, LOCAL_DATA_DIR, OUTPUT_DIR, DATA_DIR
 
 
-CALIBRATION_PATHS = (
-    Path("configs/local/calibration.json"),
-    Path("configs/local/calibration_temporary.json"),
-)
-BACKGROUND_PATH = Path("data/local/empty_work_area.png")
-DEFAULT_CONFIG_PATH = Path("configs/vision_detection.json")
-LOCAL_CONFIG_PATH = Path("configs/local/vision_detection.json")
-ROI_PATH = Path("configs/local/a4_roi.json")
-LOCKED_RESULT_PATH = Path("output/locked_piece_observations.json")
-ASSEMBLY_PLAN_PATH = Path("output/assembly_plan.json")
-ASSEMBLY_PREVIEW_PATH = Path("output/assembly_preview.png")
-REAL_CASES_PATH = Path("data/real_cases")
+CALIBRATION_PATHS = (LOCAL_CONFIG_DIR / "calibration.json", LOCAL_CONFIG_DIR / "calibration_temporary.json")
+BACKGROUND_PATH = LOCAL_DATA_DIR / "empty_work_area.png"
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "vision_detection.json"
+LOCAL_CONFIG_PATH = LOCAL_CONFIG_DIR / "vision_detection.json"
+ROI_PATH = LOCAL_CONFIG_DIR / "a4_roi.json"
+LOCKED_RESULT_PATH = OUTPUT_DIR / "locked_piece_observations.json"
+ASSEMBLY_PLAN_PATH = OUTPUT_DIR / "assembly_plan.json"
+ASSEMBLY_PREVIEW_PATH = OUTPUT_DIR / "assembly_preview.png"
+REAL_CASES_PATH = DATA_DIR / "real_cases"
 
 
 class PieceDetectionApp:

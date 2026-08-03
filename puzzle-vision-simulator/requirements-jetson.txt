@@ -1,0 +1,4 @@
+# Install the JetPack-compatible system packages first:
+#   sudo apt install python3-tk python3-opencv python3-numpy v4l-utils
+# Then install the Python package that is not normally included in JetPack:
+pyserial>=3.5

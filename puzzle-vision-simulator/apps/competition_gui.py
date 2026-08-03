@@ -52,10 +52,11 @@ from puzzle_device.planning import (
     solve_textured_assembly,
 )
 from puzzle_device.vision.piece_vision import draw_piece_observations
+from puzzle_device.paths import LOCAL_CONFIG_DIR, OUTPUT_DIR
 
 
-RUN_LOG_DIR = Path("output/competition_runs")
-ROI_PATH = Path("configs/local/a4_roi.json")
+RUN_LOG_DIR = OUTPUT_DIR / "competition_runs"
+ROI_PATH = LOCAL_CONFIG_DIR / "a4_roi.json"
 
 
 class CompetitionApp(PuzzleControlApp):

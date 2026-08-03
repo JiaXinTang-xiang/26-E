@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from puzzle_device.vision.camera import open_uvc_camera
+from puzzle_device.paths import LOCAL_CONFIG_DIR
 
 
 WINDOW_MAIN = "Puzzle Debug - Main"
@@ -26,7 +27,7 @@ WINDOW_BRIGHT = "Puzzle Debug - Brightness"
 WINDOW_EDGES = "Puzzle Debug - Canny Edges"
 WINDOW_MASK = "Puzzle Debug - Selected Mask"
 WINDOW_CONTROLS = "Puzzle Debug - Controls"
-SETTINGS_PATH = Path("configs/local/piece_vision_debug.json")
+SETTINGS_PATH = LOCAL_CONFIG_DIR / "piece_vision_debug.json"
 
 
 @dataclass

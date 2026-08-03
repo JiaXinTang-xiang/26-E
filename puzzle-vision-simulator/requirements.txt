@@ -1,3 +1,5 @@
 numpy>=1.23
-opencv-python>=4.6
+# Jetson Nano should use the JetPack/V4L2 system OpenCV package instead of a
+# pip wheel.  The ARM64 wheel is often unavailable or conflicts with CUDA.
+opencv-python>=4.6; platform_machine != "aarch64"
 pyserial>=3.5

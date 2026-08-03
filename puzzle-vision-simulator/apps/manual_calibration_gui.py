@@ -21,13 +21,14 @@ from puzzle_device.calibration.manual_calibration import (
     CalibrationPoint,
     PixelToGantryCalibration,
 )
+from puzzle_device.paths import LOCAL_CONFIG_DIR
 from puzzle_device.vision.camera import open_uvc_camera
 
 MAX_GANTRY_X_PULSE = 2350
 MAX_GANTRY_Y_PULSE = 1350
-DRAFT_PATH = Path("configs/local/calibration_points_draft.json")
-CALIBRATION_PATH = Path("configs/local/calibration.json")
-TEMPORARY_CALIBRATION_PATH = Path("configs/local/calibration_temporary.json")
+DRAFT_PATH = LOCAL_CONFIG_DIR / "calibration_points_draft.json"
+CALIBRATION_PATH = LOCAL_CONFIG_DIR / "calibration.json"
+TEMPORARY_CALIBRATION_PATH = LOCAL_CONFIG_DIR / "calibration_temporary.json"
 
 
 class ManualCalibrationApp:

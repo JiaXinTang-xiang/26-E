@@ -29,6 +29,7 @@ from puzzle_device.calibration.gantry_protocol import (
 )
 from puzzle_device.planning import build_execution_tasks
 from puzzle_device.calibration.manual_calibration import PixelToGantryCalibration
+from puzzle_device.paths import LOCAL_CONFIG_DIR, LOCAL_DATA_DIR, OUTPUT_DIR
 from puzzle_device.planning import (
     AssemblyConfig,
     build_movement_plan,
@@ -45,20 +46,20 @@ from puzzle_device.vision.piece_vision import (
 from puzzle_device.vision.stability import PieceStabilityTracker
 
 
-PLAN_PATH = Path("output/assembly_plan.json")
-PREVIEW_PATH = Path("output/assembly_preview.png")
-FAILED_PLAN_PATH = Path("output/assembly_plan_failed.json")
-FAILED_PREVIEW_PATH = Path("output/assembly_preview_failed.png")
-FAILED_VISION_PATH = Path("output/assembly_vision_failed.json")
-FAILED_VISION_FRAME_PATH = Path("output/assembly_vision_failed.png")
-FAILED_VISION_OVERLAY_PATH = Path("output/assembly_vision_failed_overlay.png")
-BACKGROUND_PATH = Path("data/local/empty_work_area.png")
-DEFAULT_CONFIG_PATH = Path("configs/vision_detection.json")
-LOCAL_CONFIG_PATH = Path("configs/local/vision_detection.json")
-ROI_PATH = Path("configs/local/a4_roi.json")
+PLAN_PATH = OUTPUT_DIR / "assembly_plan.json"
+PREVIEW_PATH = OUTPUT_DIR / "assembly_preview.png"
+FAILED_PLAN_PATH = OUTPUT_DIR / "assembly_plan_failed.json"
+FAILED_PREVIEW_PATH = OUTPUT_DIR / "assembly_preview_failed.png"
+FAILED_VISION_PATH = OUTPUT_DIR / "assembly_vision_failed.json"
+FAILED_VISION_FRAME_PATH = OUTPUT_DIR / "assembly_vision_failed.png"
+FAILED_VISION_OVERLAY_PATH = OUTPUT_DIR / "assembly_vision_failed_overlay.png"
+BACKGROUND_PATH = LOCAL_DATA_DIR / "empty_work_area.png"
+DEFAULT_CONFIG_PATH = LOCAL_CONFIG_DIR.parent / "vision_detection.json"
+LOCAL_CONFIG_PATH = LOCAL_CONFIG_DIR / "vision_detection.json"
+ROI_PATH = LOCAL_CONFIG_DIR / "a4_roi.json"
 CALIBRATION_PATHS = (
-    Path("configs/local/calibration.json"),
-    Path("configs/local/calibration_temporary.json"),
+    LOCAL_CONFIG_DIR / "calibration.json",
+    LOCAL_CONFIG_DIR / "calibration_temporary.json",
 )
 SERVO_HOME_ANGLE = 135
 SUPPORTED_PIECE_COUNTS = (1, 2, 3, 4)
