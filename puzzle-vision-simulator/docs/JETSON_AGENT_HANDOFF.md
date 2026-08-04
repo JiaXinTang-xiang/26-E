@@ -1,6 +1,6 @@
-# PC → Jetson Nano Agent 交接说明
+# PC → Jetson Orin Nano Agent 交接说明
 
-本文档用于 PC 端 Agent 与 Jetson Nano 端 Agent 之间的工程交接。
+本文档用于 PC 端 Agent 与 Jetson Orin Nano 端 Agent 之间的工程交接。
 Jetson 端 Agent 应先阅读本文，再执行安装、路径检查和硬件测试。
 
 ## 1. 工程位置和目标
@@ -11,13 +11,18 @@ Jetson 端 Agent 应先阅读本文，再执行安装、路径检查和硬件测
 puzzle-vision-simulator/
 ```
 
-目标平台：
+当前实际目标平台（2026-08-03 已由设备截图确认）：
 
 ```text
-Jetson Nano + USB 相机 + CH340/CH341 + STM32F103 下位机
+NVIDIA Jetson Orin Nano Engineering Reference Developer Kit
+Ubuntu 22.04 Jammy / Linux 5.15.185-tegra
+Python 3.10.12
+CUDA 12.6.85 / cuDNN 9.2 / TensorRT 10.7
+OpenCV 4.10.0 with CUDA
+USB 相机 + CH340/CH341 + STM32F103 下位机
 ```
 
-目标是把 PC 上已经验证的视觉、拼接、坐标映射和比赛控制程序迁移到 Jetson Nano，保持下位机协议和动作逻辑不变。
+目标是把 PC 上已经验证的视觉、拼接、坐标映射和比赛控制程序迁移到 Jetson Orin Nano，保持下位机协议和动作逻辑不变。
 
 ## 2. PC 端已完成内容
 
@@ -85,15 +90,41 @@ v4l2-ctl --list-devices
 ls -l /dev/ttyUSB* /dev/ttyACM* 2>/dev/null || true
 ```
 
-建议安装 JetPack 系统包：
+本机 Python 3.10.12 满足工程语法要求，不需要把代码降级为 Python 3.6/3.8 写法。
+
+先运行工程自检：
+
+```bash
+python3 -m tools.jetson_environment_check --camera 0
+```
+
+当前 OpenCV 4.10.0 已经带 CUDA，**不要执行** `pip install opencv-python`，也不要在未确认前用
+`apt install python3-opencv` 覆盖它。只补充缺少的软件：
 
 ```bash
 sudo apt update
-sudo apt install python3-tk python3-opencv python3-numpy v4l-utils
+sudo apt install python3-tk v4l-utils
 python3 -m pip install -r requirements-jetson.txt
 ```
 
-Jetson Nano 不建议直接使用 pip 安装 `opencv-python`，优先使用 JetPack 自带的 OpenCV。
+如果使用虚拟环境，需要让它能看到系统 CUDA OpenCV：
+
+```bash
+python3 -m venv --system-site-packages .venv
+```
+
+正式启动脚本默认直接使用 `python3`。需要指定其他解释器时使用：
+
+```bash
+PYTHON_BIN=/path/to/python ./启动比赛.sh
+```
+
+CUDA 是可选加速，不是比赛运行前提。程序会检查所需 Python CUDA 算子，缺失或执行失败时自动回退 CPU。
+若要在联调时强制使用 CPU：
+
+```bash
+PUZZLE_VISION_CUDA=0 ./启动比赛.sh
+```
 
 ## 6. 硬件设备约定
 
@@ -135,6 +166,8 @@ python3 -m apps.competition_gui --camera 0 --serial /dev/ttyUSB0
 chmod +x 启动比赛.sh 启动标定.sh
 ./启动比赛.sh
 ```
+
+`启动比赛界面.sh` 仅保留为兼容入口，实际会转到 `启动比赛.sh`。
 
 标定界面：
 
@@ -219,7 +252,9 @@ output/assembly_vision_failed_overlay.png
 - 当前标定矩阵只适用于建立它时的相机位置、分辨率和 A4 位置。
 - Jetson 摄像头若实际输出不是 1280×720，必须重新标定。
 - 2（2）目前主要依靠几何和纹理接缝，尚未加入完整 OCR、牌角数字对角校验和圆角语义判断。
-- Jetson Nano 上需要实测识别耗时和比赛 120 秒限制。
+- Jetson Orin Nano 上需要分别实测 CPU/CUDA 识别耗时和比赛 120 秒限制。
+- `jtop` 显示 JetPack 为 `MISSING`，但 L4T 36.5.0、CUDA、cuDNN、TensorRT 和 CUDA OpenCV
+  已存在。除非系统组件实际缺失，不要仅为消除该提示重装整套 JetPack。
 - Tkinter 界面需要桌面显示环境，纯 SSH 无图形界面时不能直接打开 GUI。
 
 ## 12. 交接完成标准
@@ -234,4 +269,3 @@ Jetson 端 Agent 完成以下项目后，才算移植完成：
 - 1（2）拼接执行成功；
 - 2（1）两块、三块、四块分别测试；
 - 运行日志和失败诊断文件可以正常保存。
-

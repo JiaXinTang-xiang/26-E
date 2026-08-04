@@ -244,6 +244,9 @@ def build_movement_plan(
             "source_center_px": _xy(source_center_px),
             "source_pick_px": _xy(source_pick_px),
             "source_pick_pulse": None if source_pulse is None else list(source_pulse),
+            "source_polygon_px": [
+                _xy(point) for point in np.asarray(piece.polygon, dtype=np.float64)
+            ],
             "source_center_a4_mm": _xy(source_center_mm),
             "source_pick_a4_mm": _xy(source_pick_mm),
             "source_angle_deg": round(float(piece.pca_angle_deg), 3),
@@ -314,6 +317,7 @@ def build_movement_plan(
             "texture_seam_scores": [
                 round(float(score), 6) for score in assembly.texture_seam_scores
             ],
+            "candidate_diagnostics": list(assembly.candidate_diagnostics),
             "geometry_score": round(float(assembly.score), 6),
             "recovered_size_mm": _xy(assembly.recovered_size_mm),
             "target_size_range_mm": {
@@ -413,3 +417,71 @@ def draw_assembly_preview(
         cv2.putText(output, f"P{piece.piece_id} #{sequence}", target,
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
     return output
+
+
+def draw_card_candidate_gallery(
+    image: np.ndarray,
+    assembly: AssemblyPlan,
+    config: AssemblyConfig | None = None,
+) -> np.ndarray:
+    """Render the top playing-card candidates with score breakdowns."""
+    cfg = config or AssemblyConfig()
+    diagnostics = list(assembly.candidate_diagnostics)[:5]
+    if not diagnostics:
+        return image.copy()
+    tile_width, tile_height = 390, 265
+    columns = 2
+    rows = int(math.ceil(len(diagnostics) / columns))
+    gallery = np.full((rows * tile_height, columns * tile_width, 3), 32, np.uint8)
+    colors = ((38, 142, 255), (66, 190, 95), (210, 110, 60), (180, 80, 205))
+    for index, item in enumerate(diagnostics):
+        row, column = divmod(index, columns)
+        x0, y0 = column * tile_width, row * tile_height
+        tile = gallery[y0:y0 + tile_height, x0:x0 + tile_width]
+        tile[:] = 245
+        polygons = [np.asarray(value, dtype=np.float64) for value in item["placed_polygons_a4"]]
+        all_points = np.vstack(polygons)
+        minimum = all_points.min(axis=0)
+        maximum = all_points.max(axis=0)
+        span = np.maximum(maximum - minimum, 1.0)
+        drawing_box = np.asarray([205.0, 145.0])
+        scale = min(drawing_box[0] / span[0], drawing_box[1] / span[1])
+        origin = np.asarray([20.0, 38.0]) + (drawing_box - span * scale) * 0.5
+        transformed = [
+            np.round(origin + (polygon - minimum) * scale).astype(np.int32)
+            for polygon in polygons
+        ]
+        for piece_index, polygon in enumerate(transformed):
+            color = colors[piece_index % len(colors)]
+            cv2.fillPoly(tile, [polygon], color)
+            cv2.polylines(tile, [polygon], True, (30, 30, 30), 2, cv2.LINE_AA)
+            center = tuple(np.round(polygon.mean(axis=0)).astype(int))
+            cv2.putText(tile, f"P{piece_index}", center, cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45, (20, 20, 20), 1, cv2.LINE_AA)
+        rank = int(item["rank"])
+        title_color = (20, 110, 20) if rank == 1 else (35, 35, 35)
+        title_metric = (
+            f"select {item['selection_score']:.1f}"
+            if "selection_score" in item
+            else f"total {item['total_score']:.1f}"
+        )
+        cv2.putText(tile, f"#{rank}  {title_metric}", (10, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, title_color, 2, cv2.LINE_AA)
+        text_x = 238
+        lines = (
+            f"size {item['recovered_size_mm'][0]:.1f} x {item['recovered_size_mm'][1]:.1f}",
+            f"raw {item.get('base_total_score', item['total_score']):.1f}",
+            f"family {item.get('family_support', 1)} / -{item.get('consensus_bonus', 0.0):.1f}",
+            f"geom {item['geometry_score']:.1f}",
+            f"shape {item['card_shape_penalty']:.1f}",
+            f"struct {item['structure_penalty']:.1f}",
+            f"tex pen {item['texture_penalty']:.1f}",
+            f"fill/over {item['rectangle_fill_ratio']:.1%}/{item['overlap_ratio']:.1%}",
+        )
+        for line_index, line in enumerate(lines):
+            cv2.putText(tile, line, (text_x, 47 + line_index * 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (45, 45, 45),
+                        1, cv2.LINE_AA)
+        cv2.rectangle(tile, (0, 0), (tile_width - 1, tile_height - 1),
+                      (40, 150, 40) if rank == 1 else (120, 120, 120), 2)
+    return gallery

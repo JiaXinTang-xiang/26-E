@@ -8,9 +8,13 @@ layers respectively.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor
 import itertools
 import json
 import math
+import multiprocessing as mp
+import os
+import platform
 
 import cv2
 import numpy as np
@@ -69,6 +73,32 @@ class AssemblyConfig:
     structure_candidate_limit: int = 240
     texture_geometry_window_score: float = 80.0
     texture_score_weight: float = 150.0
+    # Requirement 2(2) playing-card cues.  The PC trial profile uses every
+    # value below as a soft ranking term, never as a hard rejection condition.
+    card_aspect_ratio: float = 88.0 / 57.0
+    card_aspect_score_weight: float = 260.0
+    card_size_score_weight: float = 80.0
+    card_partial_match_penalty: float = 8.0
+    card_outer_edge_match_penalty: float = 18.0
+    # Several edge/end-point hypotheses often converge to the same physical
+    # layout.  Treat that repeated agreement as soft evidence instead of
+    # allowing one isolated, card-shaped false match to win the ranking.
+    card_family_signature_rms: float = 0.025
+    card_family_signature_max: float = 0.050
+    card_family_candidate_limit: int = 12
+    card_family_bonus_per_support: float = 12.0
+    card_family_bonus_cap: float = 36.0
+    # Texture extracted from mostly white card margins is weak evidence. Keep
+    # its ordering effect, but pull it towards neutral unless later work adds
+    # an explicit pattern-evidence confidence value.
+    card_texture_contrast_weight: float = 0.50
+    card_rounded_chord_min_mm: float = 1.5
+    card_rounded_chord_max_mm: float = 10.0
+    card_rounded_corner_angle_error_deg: float = 24.0
+    card_pattern_lightness_drop_lab: float = 22.0
+    card_pattern_chroma_delta_lab: float = 15.0
+    card_pattern_min_informative_ratio: float = 0.025
+    card_texture_neutral_score: float = 0.50
     placement_gap_mm: float = 5.0
     maximum_piece_offset_mm: float = 12.0
     maximum_corresponding_vertex_distance_mm: float = 20.0
@@ -100,6 +130,7 @@ class AssemblyPlan:
     placement_offset_directions: tuple[tuple[float, float], ...] = ()
     placement_reference_polygons: tuple[np.ndarray, ...] = ()
     enforce_corresponding_vertex_limit: bool = True
+    candidate_diagnostics: tuple[dict, ...] = ()
 
 
 def legacy_4_0_config(config: AssemblyConfig | None = None) -> AssemblyConfig:
@@ -109,6 +140,36 @@ def legacy_4_0_config(config: AssemblyConfig | None = None) -> AssemblyConfig:
     # Keep the original node-4 geometry thresholds.  The profile switch is
     # intended to restore the old search/ranking path, not to silently change
     # the task quality criteria.
+    return AssemblyConfig(**values)
+
+
+def relaxed_card_config(config: AssemblyConfig | None = None) -> AssemblyConfig:
+    """Return a deliberately permissive PC trial profile for requirement 2(2)."""
+    values = dict((config or AssemblyConfig()).__dict__)
+    values.update({
+        "solver_profile": "card_relaxed",
+        "minimum_target_width_mm": 70.0,
+        "maximum_target_width_mm": 125.0,
+        "minimum_target_height_mm": 40.0,
+        "maximum_target_height_mm": 90.0,
+        "target_size_tolerance_mm": 6.0,
+        "candidate_size_margin_mm": 14.0,
+        "edge_relative_tolerance": max(float(values["edge_relative_tolerance"]), 0.18),
+        "two_piece_edge_relative_tolerance": max(
+            float(values["two_piece_edge_relative_tolerance"]), 0.35
+        ),
+        "candidates_per_piece_pair": max(int(values["candidates_per_piece_pair"]), 24),
+        "minimum_rectangle_fill_ratio": 0.68,
+        "minimum_union_convexity_ratio": 0.78,
+        "minimum_hull_rectangle_ratio": 0.78,
+        "maximum_overlap_ratio": 0.06,
+        "structure_candidate_limit": 0,
+        "texture_geometry_window_score": 180.0,
+        "texture_score_weight": 95.0,
+        "card_partial_match_penalty": min(
+            float(values["card_partial_match_penalty"]), 4.0
+        ),
+    })
     return AssemblyConfig(**values)
 
 
@@ -315,10 +376,11 @@ def _unexplained_edge_ratio(
     return unexplained_length / max(total_length, 1e-9)
 
 
-def _match_segments(polygons, match):
+def _match_segments(polygons, match, edge_cache=None):
     _, first, first_edge, second, second_edge, first_start, first_end, second_start, second_end = match
-    first_a, first_b = _edges(polygons[first])[first_edge]
-    second_a, second_b = _edges(polygons[second])[second_edge]
+    edges = edge_cache if edge_cache is not None else [_edges(polygon) for polygon in polygons]
+    first_a, first_b = edges[first][first_edge]
+    second_a, second_b = edges[second][second_edge]
     return (
         first_a + (first_b - first_a) * first_start,
         first_a + (first_b - first_a) * first_end,
@@ -329,6 +391,9 @@ def _match_segments(polygons, match):
 
 def _edge_candidates(polygons, config: AssemblyConfig):
     candidates_by_pair = {}
+    # Vertices are immutable during a solve.  Building these lists once avoids
+    # repeatedly allocating the same short edge arrays in the nested pair loop.
+    polygon_edges = [_edges(polygon) for polygon in polygons]
     # Node 4 used the same edge-candidate generation for every piece count.
     # The newer exhaustive two-piece/full-edge branch remains available only
     # to the current profile.
@@ -340,9 +405,9 @@ def _edge_candidates(polygons, config: AssemblyConfig):
     for first, second in itertools.combinations(range(len(polygons)), 2):
         full = []
         partial = []
-        for first_edge, (first_a, first_b) in enumerate(_edges(polygons[first])):
+        for first_edge, (first_a, first_b) in enumerate(polygon_edges[first]):
             first_length = float(np.linalg.norm(first_b - first_a))
-            for second_edge, (second_a, second_b) in enumerate(_edges(polygons[second])):
+            for second_edge, (second_a, second_b) in enumerate(polygon_edges[second]):
                 second_length = float(np.linalg.norm(second_b - second_a))
                 relative = abs(first_length - second_length) / max(first_length, second_length, 1e-6)
                 if relative <= full_edge_tolerance:
@@ -446,6 +511,7 @@ def _matching_sets(polygons, config: AssemblyConfig):
 
 
 def _assemble(polygons, matches, config: AssemblyConfig):
+    edge_cache = [_edges(polygon) for polygon in polygons]
     adjacency = [[] for _ in polygons]
     for match in matches:
         _, first, _first_edge, second, _second_edge, *_ = match
@@ -458,7 +524,9 @@ def _assemble(polygons, matches, config: AssemblyConfig):
     while stack:
         current = stack.pop()
         for neighbour, match, reversed_sides in adjacency[current]:
-            first_a, first_b, second_a, second_b = _match_segments(polygons, match)
+            first_a, first_b, second_a, second_b = _match_segments(
+                polygons, match, edge_cache
+            )
             if reversed_sides:
                 first_a, first_b, second_a, second_b = second_a, second_b, first_a, first_b
             world_a, world_b = _apply(np.asarray([first_a, first_b]), transforms[current])
@@ -474,14 +542,22 @@ def _assemble(polygons, matches, config: AssemblyConfig):
         return None
     placed = [_apply(polygon, transform) for polygon, transform in zip(polygons, transforms)]
     if (
-        config.solver_profile != "legacy_4_0"
-        and not _matched_seams_are_valid(polygons, transforms, placed, matches, config)
+        config.solver_profile == "current"
+        and not _matched_seams_are_valid(
+            polygons, transforms, placed, matches, config, edge_cache
+        )
     ):
         return None
-    overlap = sum(
-        _intersection_area(placed[first], placed[second])
-        for first, second in itertools.combinations(range(len(placed)), 2)
-    )
+    overlap = 0.0
+    for first, second in itertools.combinations(range(len(placed)), 2):
+        first_min, first_max = placed[first].min(axis=0), placed[first].max(axis=0)
+        second_min, second_max = placed[second].min(axis=0), placed[second].max(axis=0)
+        # AABBs that do not touch cannot have polygon overlap.  This is an
+        # exact rejection (not a geometry heuristic), and avoids expensive
+        # contour/raster intersection calls for most bad layouts.
+        if np.any(first_max <= second_min) or np.any(second_max <= first_min):
+            continue
+        overlap += _intersection_area(placed[first], placed[second])
     points = np.vstack(placed).astype(np.float32)
     min_rect = cv2.minAreaRect(points)
     side_a, side_b = min_rect[1]
@@ -548,11 +624,14 @@ def _matched_seams_are_valid(
     placed: list[np.ndarray],
     matches: tuple,
     config: AssemblyConfig,
+    edge_cache=None,
 ) -> bool:
     """Reject length-only candidates that do not make a real shared seam."""
     for match in matches:
         _, first, _first_edge, second, _second_edge, *_ = match
-        first_a, first_b, second_a, second_b = _match_segments(polygons, match)
+        first_a, first_b, second_a, second_b = _match_segments(
+            polygons, match, edge_cache
+        )
         first_a, first_b = _apply(np.asarray([first_a, first_b]), transforms[first])
         second_a, second_b = _apply(np.asarray([second_a, second_b]), transforms[second])
         first_vector = first_b - first_a
@@ -623,6 +702,145 @@ def _sample_bilinear(image: np.ndarray, point: np.ndarray) -> np.ndarray | None:
     return top * (1.0 - dy) + bottom * dy
 
 
+def _card_rounded_outer_edges(
+    polygon: np.ndarray, config: AssemblyConfig
+) -> set[int]:
+    """Find likely original-card edges adjacent to a rounded-corner chord."""
+    points = np.asarray(polygon, dtype=np.float64)
+    count = len(points)
+    outer: set[int] = set()
+    if count < 4:
+        return outer
+    for index in range(count):
+        start = points[index]
+        end = points[(index + 1) % count]
+        chord_length = float(np.linalg.norm(end - start))
+        if not config.card_rounded_chord_min_mm <= chord_length <= config.card_rounded_chord_max_mm:
+            continue
+        incoming = start - points[(index - 1) % count]
+        outgoing = points[(index + 2) % count] - end
+        incoming_length = float(np.linalg.norm(incoming))
+        outgoing_length = float(np.linalg.norm(outgoing))
+        if min(incoming_length, outgoing_length) < config.card_rounded_chord_max_mm:
+            continue
+        cosine = abs(float(incoming @ outgoing)) / max(
+            incoming_length * outgoing_length, 1e-9
+        )
+        angle = math.degrees(math.acos(float(np.clip(cosine, 0.0, 1.0))))
+        if abs(90.0 - angle) <= config.card_rounded_corner_angle_error_deg:
+            outer.add((index - 1) % count)
+            outer.add((index + 1) % count)
+    return outer
+
+
+def _piece_paper_lab(
+    lab: np.ndarray,
+    polygon: np.ndarray,
+    roi: tuple[int, int, int, int],
+    config: AssemblyConfig,
+) -> np.ndarray:
+    """Estimate local white-card colour so shadows do not look like artwork."""
+    scale = np.array(
+        [roi[2] / config.a4_width_mm, roi[3] / config.a4_height_mm],
+        dtype=np.float64,
+    )
+    origin = np.asarray(roi[:2], dtype=np.float64)
+    pixels = np.round(origin + np.asarray(polygon) * scale).astype(np.int32)
+    mask = np.zeros(lab.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [pixels], 255)
+    mask = cv2.erode(mask, np.ones((5, 5), np.uint8))
+    values = lab[mask > 0]
+    if not len(values):
+        return np.asarray([230.0, 128.0, 128.0], dtype=np.float64)
+    light_cut = np.percentile(values[:, 0], 55.0)
+    paper = values[values[:, 0] >= light_cut]
+    return np.median(paper if len(paper) else values, axis=0)
+
+
+def _card_pattern_features(
+    samples: np.ndarray, reference: np.ndarray, config: AssemblyConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    darkness = np.clip(
+        (reference[0] - samples[:, 0])
+        / max(config.card_pattern_lightness_drop_lab, 1.0),
+        0.0,
+        4.0,
+    )
+    chroma = np.clip(
+        (samples[:, 1:] - reference[None, 1:])
+        / max(config.card_pattern_chroma_delta_lab, 1.0),
+        -4.0,
+        4.0,
+    )
+    strength = np.maximum(darkness, np.linalg.norm(chroma, axis=1))
+    return strength, np.column_stack((darkness, chroma))
+
+
+def _card_profile_score(
+    first: np.ndarray,
+    first_reference: np.ndarray,
+    second: np.ndarray,
+    second_reference: np.ndarray,
+    config: AssemblyConfig,
+) -> tuple[float, int]:
+    """Compare artwork position/colour/transition, not raw average colour."""
+    first_strength, first_features = _card_pattern_features(
+        first, first_reference, config
+    )
+    second_strength, second_features = _card_pattern_features(
+        second, second_reference, config
+    )
+    count = min(len(first_strength), len(second_strength))
+    if count < 6:
+        return config.card_texture_neutral_score, 0
+    best: tuple[float, int] | None = None
+    for shift in (-2, -1, 0, 1, 2):
+        if shift < 0:
+            first_slice, second_slice = slice(-shift, count), slice(0, count + shift)
+        elif shift > 0:
+            first_slice, second_slice = slice(0, count - shift), slice(shift, count)
+        else:
+            first_slice = second_slice = slice(0, count)
+        first_s = first_strength[first_slice]
+        second_s = second_strength[second_slice]
+        first_f = first_features[first_slice]
+        second_f = second_features[second_slice]
+        first_visible = first_s >= 0.75
+        second_visible = second_s >= 0.75
+        informative = first_visible | second_visible
+        evidence = int(np.count_nonzero(informative))
+        minimum = max(
+            2,
+            int(math.ceil(config.card_pattern_min_informative_ratio * len(first_s))),
+        )
+        if evidence < minimum:
+            continue
+        one_sided = float(
+            np.mean(np.logical_xor(first_visible, second_visible)[informative])
+        )
+        feature_delta = float(np.mean(np.minimum(
+            np.linalg.norm(first_f[informative] - second_f[informative], axis=1)
+            / 4.0,
+            1.0,
+        )))
+        transition_mask = informative[:-1] | informative[1:]
+        transition = (
+            float(np.mean(np.minimum(
+                np.abs(np.diff(first_s) - np.diff(second_s))[transition_mask]
+                / 3.0,
+                1.0,
+            )))
+            if np.any(transition_mask) else 0.0
+        )
+        option = (
+            float(0.55 * one_sided + 0.30 * feature_delta + 0.15 * transition),
+            evidence,
+        )
+        if best is None or option[0] < best[0]:
+            best = option
+    return best if best is not None else (config.card_texture_neutral_score, 0)
+
+
 def _texture_seam_scores(
     image: np.ndarray,
     polygons_a4: list[np.ndarray],
@@ -631,6 +849,21 @@ def _texture_seam_scores(
     config: AssemblyConfig,
 ) -> tuple[float, ...]:
     """Measure printed-pattern discontinuity across every proposed cut seam."""
+    return tuple(
+        score for score, _evidence in _texture_seam_diagnostics(
+            image, polygons_a4, matches, roi, config
+        )
+    )
+
+
+def _texture_seam_diagnostics(
+    image: np.ndarray,
+    polygons_a4: list[np.ndarray],
+    matches: tuple,
+    roi: tuple[int, int, int, int],
+    config: AssemblyConfig,
+) -> tuple[tuple[float, int], ...]:
+    """Return seam discontinuity together with real artwork evidence count."""
     if image is None or image.ndim != 3:
         raise ValueError("扑克牌花纹匹配需要有效的彩色相机画面")
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float64)
@@ -639,7 +872,11 @@ def _texture_seam_scores(
         dtype=np.float64,
     )
     origin = np.asarray(roi[:2], dtype=np.float64)
-    seam_scores: list[float] = []
+    references = [
+        _piece_paper_lab(lab, polygon, roi, config)
+        for polygon in polygons_a4
+    ]
+    seam_diagnostics: list[tuple[float, int]] = []
     for match in matches:
         _, first, _first_edge, second, _second_edge, *_ = match
         first_start, first_end, second_start, second_end = _match_segments(
@@ -651,27 +888,48 @@ def _texture_seam_scores(
         second_normal = _inside_normal(
             polygons_a4[second], second_start, second_end
         )
-        differences: list[float] = []
+        profile_scores: list[tuple[float, int]] = []
         # Skip the vertices, where contour approximation and rounded card corners
         # are least reliable. Matching direction is reversed on the second edge.
-        for fraction in np.linspace(0.08, 0.92, 17):
-            first_edge_point = first_start * (1.0 - fraction) + first_end * fraction
-            second_edge_point = second_end * (1.0 - fraction) + second_start * fraction
-            for distance_mm in (1.0, 2.0, 3.2):
-                first_point = first_edge_point + first_normal * distance_mm
-                second_point = second_edge_point + second_normal * distance_mm
+        fractions = np.linspace(0.08, 0.92, 25)
+        first_edge_points = (
+            first_start[None, :] * (1.0 - fractions[:, None])
+            + first_end[None, :] * fractions[:, None]
+        )
+        second_edge_points = (
+            second_end[None, :] * (1.0 - fractions[:, None])
+            + second_start[None, :] * fractions[:, None]
+        )
+        for distance_mm in (0.6, 1.4, 2.8):
+            first_values = []
+            second_values = []
+            for first_point, second_point in zip(
+                first_edge_points + first_normal * distance_mm,
+                second_edge_points + second_normal * distance_mm,
+            ):
                 first_color = _sample_bilinear(lab, origin + first_point * scale)
                 second_color = _sample_bilinear(lab, origin + second_point * scale)
-                if first_color is None or second_color is None:
-                    continue
-                # L carries most printed detail; a/b retain red and black suit cues.
-                delta = np.abs(first_color - second_color)
-                differences.append(
-                    float(0.60 * delta[0] + 0.20 * delta[1] + 0.20 * delta[2])
-                    / 255.0
-                )
-        seam_scores.append(float(np.mean(differences)) if differences else 1.0)
-    return tuple(seam_scores)
+                if first_color is not None and second_color is not None:
+                    first_values.append(first_color)
+                    second_values.append(second_color)
+            if len(first_values) >= 6:
+                profile_scores.append(_card_profile_score(
+                    np.asarray(first_values),
+                    references[first],
+                    np.asarray(second_values),
+                    references[second],
+                    config,
+                ))
+        informative = [item for item in profile_scores if item[1] > 0]
+        if informative:
+            evidence_total = int(sum(evidence for _, evidence in informative))
+            seam_diagnostics.append((float(
+                sum(score * evidence for score, evidence in informative)
+                / evidence_total
+            ), evidence_total))
+        else:
+            seam_diagnostics.append((float(config.card_texture_neutral_score), 0))
+    return tuple(seam_diagnostics)
 
 
 def _choose_candidate(
@@ -681,7 +939,8 @@ def _choose_candidate(
     config: AssemblyConfig,
     texture_image: np.ndarray | None,
     prefer_fixed_card_shape: bool,
-) -> tuple[tuple, float | None, tuple[float, ...]]:
+    card_mode: bool = False,
+) -> tuple[tuple, float | None, tuple[float, ...], tuple[dict, ...]]:
     def partial_match_count(candidate: tuple) -> int:
         return sum(
             not (
@@ -694,9 +953,28 @@ def _choose_candidate(
         )
 
     def fixed_card_penalty(candidate: tuple) -> float:
-        if not prefer_fixed_card_shape:
+        if not prefer_fixed_card_shape and not card_mode:
             return 0.0
         width, height = candidate[3]
+        if card_mode:
+            aspect = width / max(height, 1e-6)
+            expected_aspect = config.card_aspect_ratio
+            total_area = sum(
+                abs(float(cv2.contourArea(np.asarray(polygon, np.float32))))
+                for polygon in polygons_a4
+            )
+            expected_area = total_area / 0.94
+            expected_height = math.sqrt(expected_area / max(expected_aspect, 1e-6))
+            expected_width = expected_height * expected_aspect
+            aspect_error = abs(math.log(max(aspect, 1e-6) / expected_aspect))
+            size_error = (
+                abs(width - expected_width) / max(expected_width, 1e-6)
+                + abs(height - expected_height) / max(expected_height, 1e-6)
+            )
+            return (
+                config.card_aspect_score_weight * aspect_error
+                + config.card_size_score_weight * size_error
+            )
         aspect = width / max(height, 1e-6)
         expected_aspect = config.target_width_mm / config.target_height_mm
         dimension_error = (
@@ -711,21 +989,67 @@ def _choose_candidate(
     full_edge_candidates = [
         candidate for candidate in candidates if partial_match_count(candidate) == 0
     ]
-    if full_edge_candidates:
+    if full_edge_candidates and not card_mode:
         candidates = full_edge_candidates
 
+    rounded_outer_edges = (
+        [_card_rounded_outer_edges(polygon, config) for polygon in polygons_a4]
+        if card_mode else []
+    )
+
+    def card_structure_penalty(candidate: tuple) -> float:
+        if not card_mode:
+            return 0.0
+        partial = partial_match_count(candidate)
+        outer_matches = sum(
+            int(match[2] in rounded_outer_edges[match[1]])
+            + int(match[4] in rounded_outer_edges[match[3]])
+            for match in candidate[-1]
+        )
+        return (
+            partial * config.card_partial_match_penalty
+            + outer_matches * config.card_outer_edge_match_penalty
+        )
+
+    def layout_signature(candidate: tuple) -> np.ndarray:
+        """Rigid-motion invariant signature of the labelled piece layout."""
+        placed = [np.asarray(polygon, dtype=np.float64) for polygon in candidate[2]]
+        if len(placed) < 2:
+            return np.empty(0, dtype=np.float64)
+        centers = [polygon.mean(axis=0) for polygon in placed]
+        width, height = candidate[3]
+        scale = max(math.hypot(width, height), 1e-6)
+        return np.asarray([
+            np.linalg.norm(centers[first] - centers[second]) / scale
+            for first, second in itertools.combinations(range(len(centers)), 2)
+        ], dtype=np.float64)
+
+    def same_layout_family(first: np.ndarray, second: np.ndarray) -> bool:
+        if first.shape != second.shape or first.size == 0:
+            return False
+        difference = np.abs(first - second)
+        return (
+            float(np.sqrt(np.mean(difference * difference)))
+            <= config.card_family_signature_rms
+            and float(np.max(difference)) <= config.card_family_signature_max
+        )
+
     if texture_image is None or len(polygons_a4) == 1:
-        return min(
+        selected = min(
             candidates,
-            key=lambda candidate: candidate[0] + fixed_card_penalty(candidate),
-        ), (
+            key=lambda candidate: candidate[0] + fixed_card_penalty(candidate)
+            + card_structure_penalty(candidate),
+        )
+        return selected, (
             0.0 if texture_image is not None else None
-        ), ()
+        ), (), ()
 
     # Printed white margins can make unrelated outer edges look deceptively
     # continuous. Let texture resolve only candidates that are already close
     # to the best geometric layout.
-    candidates = sorted(candidates, key=lambda candidate: candidate[0])[:80]
+    candidates = sorted(candidates, key=lambda candidate: candidate[0])[
+        :160 if card_mode else 80
+    ]
     geometry_floor = candidates[0][0]
     candidates = [
         candidate for candidate in candidates
@@ -738,14 +1062,99 @@ def _choose_candidate(
             texture_image, polygons_a4, matches, roi, config
         )
         texture_score = float(np.mean(seam_scores)) if seam_scores else 1.0
-        evaluated.append((candidate[0]
-                          + texture_score * config.texture_score_weight
-                          + fixed_card_penalty(candidate),
-                          candidate, texture_score, seam_scores))
-    _, candidate, texture_score, seam_scores = min(
-        evaluated, key=lambda item: item[0]
-    )
-    return candidate, texture_score, seam_scores
+        effective_texture_score = texture_score
+        if card_mode:
+            neutral = config.card_texture_neutral_score
+            effective_texture_score = neutral + (
+                texture_score - neutral
+            ) * config.card_texture_contrast_weight
+        card_shape_penalty = fixed_card_penalty(candidate)
+        structure_penalty = card_structure_penalty(candidate)
+        texture_penalty = effective_texture_score * config.texture_score_weight
+        base_total_score = (
+            candidate[0] + texture_penalty + card_shape_penalty + structure_penalty
+        )
+        evaluated.append((
+            base_total_score, candidate, texture_score, seam_scores,
+            card_shape_penalty, structure_penalty, texture_penalty,
+        ))
+    evaluated.sort(key=lambda item: item[0])
+
+    # Cluster only the strongest candidates. A family is defined by the
+    # labelled piece-centre distances, so global rotation and translation do
+    # not split the same physical layout into different groups. The support
+    # bonus is capped: it breaks ambiguous rankings without overriding a large
+    # genuine geometry error.
+    family_ids = [-1] * len(evaluated)
+    family_members: list[list[int]] = []
+    signatures = [layout_signature(item[1]) for item in evaluated]
+    family_limit = min(len(evaluated), config.card_family_candidate_limit)
+    if card_mode and len(polygons_a4) >= 3:
+        for index in range(family_limit):
+            assigned = False
+            for family_id, members in enumerate(family_members):
+                if same_layout_family(signatures[index], signatures[members[0]]):
+                    members.append(index)
+                    family_ids[index] = family_id
+                    assigned = True
+                    break
+            if not assigned:
+                family_ids[index] = len(family_members)
+                family_members.append([index])
+
+    reranked = []
+    for index, item in enumerate(evaluated):
+        family_support = 1
+        if 0 <= family_ids[index] < len(family_members):
+            family_support = len(family_members[family_ids[index]])
+        consensus_bonus = min(
+            config.card_family_bonus_cap,
+            max(0, family_support - 1) * config.card_family_bonus_per_support,
+        )
+        reranked.append((item[0] - consensus_bonus, item, family_support, consensus_bonus))
+    reranked.sort(key=lambda item: item[0])
+
+    diagnostics = []
+    for rank, ranked_item in enumerate(reranked[:5], start=1):
+        total_score, item, family_support, consensus_bonus = ranked_item
+        (base_total_score, candidate, candidate_texture, candidate_seams,
+         card_shape_penalty, structure_penalty, texture_penalty) = item
+        matches = candidate[-1]
+        partial_matches = partial_match_count(candidate)
+        outer_matches = 0
+        if card_mode:
+            outer_matches = sum(
+                int(match[2] in rounded_outer_edges[match[1]])
+                + int(match[4] in rounded_outer_edges[match[3]])
+                for match in matches
+            )
+        diagnostics.append({
+            "rank": rank,
+            "total_score": float(total_score),
+            "base_total_score": float(base_total_score),
+            "family_support": int(family_support),
+            "consensus_bonus": float(consensus_bonus),
+            "geometry_score": float(candidate[0]),
+            "card_shape_penalty": float(card_shape_penalty),
+            "structure_penalty": float(structure_penalty),
+            "texture_penalty": float(texture_penalty),
+            "texture_score": float(candidate_texture),
+            "texture_seam_scores": [float(value) for value in candidate_seams],
+            "partial_match_count": int(partial_matches),
+            "rounded_outer_edge_match_count": int(outer_matches),
+            "recovered_size_mm": [float(value) for value in candidate[3]],
+            "rectangle_fill_ratio": float(candidate[4]),
+            "union_convexity_ratio": float(candidate[5]),
+            "hull_rectangle_ratio": float(candidate[6]),
+            "overlap_ratio": float(candidate[7]),
+            "placed_polygons_a4": [
+                np.asarray(polygon, dtype=np.float64).round(4).tolist()
+                for polygon in candidate[2]
+            ],
+        })
+    _, selected_item, _, _ = reranked[0]
+    _, candidate, texture_score, seam_scores, *_ = selected_item
+    return candidate, texture_score, seam_scores, tuple(diagnostics)
 
 
 def solve_assembly(
@@ -755,6 +1164,7 @@ def solve_assembly(
     require_upper_half: bool = True,
     texture_image: np.ndarray | None = None,
     prefer_fixed_card_shape: bool = False,
+    card_mode: bool = False,
 ) -> AssemblyPlan:
     """Solve measured polygons and place the recovered rectangle in ROI's lower half."""
     cfg = config or AssemblyConfig()
@@ -778,6 +1188,7 @@ def solve_assembly(
     best_in_range = None
     best_any_size = None
     reliable_candidates = []
+    size_candidates = []
     states = 0
     for matches in _matching_sets(local_polygons, cfg):
         states += 1
@@ -798,6 +1209,7 @@ def solve_assembly(
             continue
         if best_in_range is None or result[0] < best_in_range[0]:
             best_in_range = candidate
+        size_candidates.append(candidate)
         if _geometry_is_reliable(result, cfg) and (
             best is None or result[0] < best[0]
         ):
@@ -817,6 +1229,18 @@ def solve_assembly(
             f"{cfg.maximum_target_height_mm:.0f} mm，视觉测量容差 "
             f"±{(cfg.target_size_tolerance_mm if cfg.solver_profile == 'legacy_4_0' else cfg.candidate_size_margin_mm):.1f} mm。请检查 A4 ROI 和轮廓顶点。"
         )
+    if best is None and card_mode:
+        # PC trial fallback: convexity and hull shape are unreliable when a
+        # rounded card corner or dark artwork perturbs the simplified contour.
+        # Keep only a basic fill floor and a real-overlap ceiling here.
+        relaxed_fallback = [
+            candidate for candidate in size_candidates
+            if candidate[4] >= 0.55
+            and candidate[7] <= max(0.10, cfg.maximum_overlap_ratio * 1.5)
+        ]
+        if relaxed_fallback:
+            reliable_candidates = relaxed_fallback
+            best = min(relaxed_fallback, key=lambda candidate: candidate[0])
     if best is None:
         recovered_size = best_in_range[3]
         range_message = (
@@ -849,9 +1273,9 @@ def solve_assembly(
             ))
         if audited:
             reliable_candidates = audited
-    best, texture_score, texture_seam_scores = _choose_candidate(
+    best, texture_score, texture_seam_scores, candidate_diagnostics = _choose_candidate(
         reliable_candidates, local_polygons, tuple(int(value) for value in roi),
-        cfg, texture_image, prefer_fixed_card_shape,
+        cfg, texture_image, prefer_fixed_card_shape, card_mode,
     )
     (
         score,
@@ -865,6 +1289,13 @@ def solve_assembly(
         dimension_error,
         matches,
     ) = best
+    if cfg.solver_profile == "current" and not target_size_is_accepted(
+        recovered_size, cfg
+    ):
+        raise RuntimeError(
+            "拼接结果超出题目尺寸范围："
+            f"{recovered_size[0]:.1f}×{recovered_size[1]:.1f} mm"
+        )
 
     # Normalize the recovered assembly to an axis-aligned target rectangle.
     all_points = np.vstack(placed).astype(np.float32)
@@ -917,6 +1348,7 @@ def solve_assembly(
         upper_piece_ids=tuple(range(len(polygons))),
         texture_score=texture_score,
         texture_seam_scores=texture_seam_scores,
+        candidate_diagnostics=candidate_diagnostics,
     )
 
 
@@ -927,13 +1359,15 @@ def solve_textured_assembly(
     config: AssemblyConfig | None = None,
     require_upper_half: bool = True,
 ) -> AssemblyPlan:
-    """Solve a printed-card puzzle using geometry plus seam continuity."""
+    """Solve a printed-card puzzle using the permissive PC trial profile."""
+    cfg = relaxed_card_config(config)
     return solve_assembly(
         polygons,
         roi,
-        config,
+        cfg,
         require_upper_half=require_upper_half,
         texture_image=image,
+        card_mode=True,
     )
 
 

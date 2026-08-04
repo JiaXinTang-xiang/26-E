@@ -15,6 +15,7 @@ from puzzle_device.vision.piece_vision import (
     extract_piece_edges,
     load_detection_config,
     save_detection_config,
+    segment_pieces,
     _polygon_from_contour,
 )
 
@@ -61,6 +62,28 @@ class PieceVisionTest(unittest.TestCase):
         self.assertEqual(len(pieces), 2)
         self.assertTrue(all(len(piece.polygon) == 4 for piece in pieces))
         self.assertTrue(all(piece.pick_clearance_px > 20 for piece in pieces))
+
+    def test_cuda_operator_failure_falls_back_to_cpu(self):
+        background = np.full((720, 1280, 3), (30, 120, 210), np.uint8)
+        image = background.copy()
+        cv2.rectangle(image, (300, 180), (750, 520), (245, 245, 245), cv2.FILLED)
+        config = DetectionConfig(
+            segmentation_method="background",
+            min_area_px=500,
+            color_distance_threshold=14,
+        )
+        with (
+            patch("puzzle_device.vision.piece_vision._check_cuda", return_value=True),
+            patch(
+                "puzzle_device.vision.piece_vision.segment_pieces_gpu",
+                side_effect=AttributeError("CUDA operator missing"),
+            ),
+            patch("puzzle_device.vision.piece_vision._disable_cuda") as disable,
+        ):
+            mask = segment_pieces(image, background, config)
+        self.assertGreater(mask[300, 500], 0)
+        self.assertEqual(mask[40, 40], 0)
+        disable.assert_called_once()
 
     def test_safe_pick_point_avoids_concave_notch(self):
         background = np.full((300, 300, 3), (40, 70, 90), np.uint8)

@@ -28,7 +28,7 @@ def _ui_font(size: int, bold: bool = False) -> tuple:
     # most modern systems with locale-aware fontconfig).
     return ("", size, weight)
 
-from apps.puzzle_control_gui import PuzzleControlApp
+from apps.puzzle_control_gui import PLAN_PATH, PREVIEW_PATH, PuzzleControlApp
 from puzzle_device.calibration.gantry_protocol import (
     STATUS_ACTION_FAILED,
     STATUS_COMMAND_REJECTED,
@@ -37,6 +37,7 @@ from puzzle_device.competition import (
     COMPETITION_LIMIT_SECONDS,
     FIELD_WHITE_MODE,
     PLAYING_CARD_MODE,
+    PLAYING_CARD_V2_MODE,
     SELF_ASSEMBLY_MODE,
     SELF_TRANSFER_MODE,
     CompetitionMode,
@@ -46,17 +47,23 @@ from puzzle_device.planning import (
     build_movement_plan,
     build_transfer_plan,
     draw_assembly_preview,
+    draw_card_candidate_gallery,
     draw_transfer_preview,
     legacy_4_0_config,
+    relaxed_card_config,
+    solve_composite_card_assembly,
     solve_self_assembly,
     solve_textured_assembly,
 )
 from puzzle_device.vision.piece_vision import draw_piece_observations
+from puzzle_device.vision.image_io import read_image, write_image
 from puzzle_device.paths import LOCAL_CONFIG_DIR, OUTPUT_DIR
 
 
 RUN_LOG_DIR = OUTPUT_DIR / "competition_runs"
 ROI_PATH = LOCAL_CONFIG_DIR / "a4_roi.json"
+CARD2_SOURCE_FRAME_PATH = OUTPUT_DIR / "card2_source_frame.png"
+CARD_CANDIDATE_GALLERY_PATH = OUTPUT_DIR / "card_candidate_gallery.png"
 
 
 class CompetitionApp(PuzzleControlApp):
@@ -75,9 +82,12 @@ class CompetitionApp(PuzzleControlApp):
         self.competition_finished_elapsed: float | None = None
         self.competition_result = "idle"
         self.competition_waiting_for_serial = False
+        self.ignore_controller_status_until_next_run = False
         self.last_competition_mode: CompetitionMode | None = None
         self.debug_planning_method = tk.StringVar(master=root, value="white")
         self.run_log_path: Path | None = None
+        self.showing_candidate_gallery = False
+        self.candidate_gallery_available = False
         self._allow_plan_loading = False
         super().__init__(root, camera_index, serial_port, rotate_180)
         self._allow_plan_loading = True
@@ -91,18 +101,35 @@ class CompetitionApp(PuzzleControlApp):
 
     def _build_ui(self) -> None:
         self.root.title("拼图装置 - 比赛一键控制")
-        self.root.geometry("1366x768")
-        self.root.minsize(1100, 650)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        self.compact_layout = screen_width <= 1100 or screen_height <= 650
+        if self.compact_layout:
+            # Leave room for the desktop panel and window decorations on the
+            # 1080x600 display used with Jetson.
+            window_width = min(1000, max(900, screen_width - 24))
+            window_height = min(560, max(500, screen_height - 55))
+            self.root.geometry(f"{window_width}x{window_height}+0+0")
+            self.root.minsize(900, 500)
+        else:
+            self.root.geometry("1366x768")
+            self.root.minsize(1100, 650)
 
         style = ttk.Style()
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        style.configure("CompetitionTitle.TLabel", font=_ui_font(18, bold=True))
-        style.configure("Timer.TLabel", font=("Consolas", 32, "bold"), foreground="#0b4f6c")
-        style.configure("Mode.TButton", font=_ui_font(15, bold=True), padding=(12, 15))
-        style.configure("Danger.TButton", font=_ui_font(11, bold=True), padding=8)
+        if self.compact_layout:
+            style.configure("CompetitionTitle.TLabel", font=_ui_font(13, bold=True))
+            style.configure("Timer.TLabel", font=("Consolas", 21, "bold"), foreground="#0b4f6c")
+            style.configure("Mode.TButton", font=_ui_font(10, bold=True), padding=(4, 6))
+            style.configure("Danger.TButton", font=_ui_font(9, bold=True), padding=4)
+        else:
+            style.configure("CompetitionTitle.TLabel", font=_ui_font(18, bold=True))
+            style.configure("Timer.TLabel", font=("Consolas", 32, "bold"), foreground="#0b4f6c")
+            style.configure("Mode.TButton", font=_ui_font(15, bold=True), padding=(12, 15))
+            style.configure("Danger.TButton", font=_ui_font(11, bold=True), padding=8)
 
-        header = ttk.Frame(self.root, padding=(14, 8))
+        header = ttk.Frame(self.root, padding=(7, 4) if self.compact_layout else (14, 8))
         header.pack(fill="x")
         ttk.Label(
             header, text="拼图装置比赛控制", style="CompetitionTitle.TLabel"
@@ -111,21 +138,25 @@ class CompetitionApp(PuzzleControlApp):
             header,
             text="比赛页一键运行；调试页保留单步操作",
             foreground="#8a3b00",
-        ).pack(side="right", pady=(7, 0))
+        ).pack(side="right", pady=(3, 0) if self.compact_layout else (7, 0))
 
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-        competition_page = ttk.Frame(self.notebook, padding=8)
-        debug_page = ttk.Frame(self.notebook, padding=8)
+        notebook_padding = 4 if self.compact_layout else 12
+        self.notebook.pack(fill="both", expand=True, padx=notebook_padding,
+                           pady=(0, 4 if self.compact_layout else 8))
+        page_padding = 4 if self.compact_layout else 8
+        competition_page = ttk.Frame(self.notebook, padding=page_padding)
+        debug_page = ttk.Frame(self.notebook, padding=page_padding)
         self.notebook.add(competition_page, text="比赛")
         self.notebook.add(debug_page, text="调试")
         self._build_competition_page(competition_page)
         self._build_debug_page(debug_page)
 
-        footer = ttk.Frame(self.root, padding=(14, 4))
+        footer = ttk.Frame(self.root, padding=(7, 2) if self.compact_layout else (14, 4))
         footer.pack(fill="x")
         ttk.Label(
-            footer, textvariable=self.status, foreground="#174c75", wraplength=1320
+            footer, textvariable=self.status, foreground="#174c75",
+            wraplength=900 if self.compact_layout else 1320,
         ).pack(side="left", fill="x", expand=True)
 
     def _configure_planning_vision_profile(self, config) -> None:
@@ -141,11 +172,15 @@ class CompetitionApp(PuzzleControlApp):
 
     def _build_competition_page(self, page: ttk.Frame) -> None:
         page.columnconfigure(0, weight=5)
-        page.columnconfigure(1, weight=3, minsize=390)
+        page.columnconfigure(1, weight=3, minsize=300 if self.compact_layout else 390)
         page.rowconfigure(0, weight=1)
 
-        image_box = ttk.LabelFrame(page, text="实时相机 / 拼接预览", padding=5)
-        image_box.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        section_gap = 4 if self.compact_layout else 8
+        control_padding = 4 if self.compact_layout else 8
+        image_box = ttk.LabelFrame(page, text="实时相机 / 拼接预览",
+                                   padding=3 if self.compact_layout else 5)
+        image_box.grid(row=0, column=0, sticky="nsew",
+                       padx=(0, 4 if self.compact_layout else 8))
         self.canvas = tk.Canvas(image_box, background="#202326", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _event: self._draw_image())
@@ -155,7 +190,7 @@ class CompetitionApp(PuzzleControlApp):
 
         self.timer_text = tk.StringVar(value="00:00.0")
         self.competition_state = tk.StringVar(value="待机：请选择题目")
-        timer_box = ttk.LabelFrame(controls, text="比赛计时（最长120秒）", padding=8)
+        timer_box = ttk.LabelFrame(controls, text="比赛计时（最长120秒）", padding=control_padding)
         timer_box.pack(fill="x")
         ttk.Label(timer_box, textvariable=self.timer_text, style="Timer.TLabel").pack()
         self.competition_state_label = tk.Label(
@@ -163,40 +198,45 @@ class CompetitionApp(PuzzleControlApp):
             textvariable=self.competition_state,
             background="#d9e7ef",
             foreground="#12384a",
-            font=_ui_font(12, bold=True),
+            font=_ui_font(9 if self.compact_layout else 12, bold=True),
             padx=8,
-            pady=7,
+            pady=4 if self.compact_layout else 7,
         )
-        self.competition_state_label.pack(fill="x", pady=(4, 0))
+        self.competition_state_label.pack(fill="x", pady=(2, 0) if self.compact_layout else (4, 0))
 
-        modes = ttk.LabelFrame(controls, text="选择比赛题目", padding=8)
-        modes.pack(fill="x", pady=(8, 0))
+        modes = ttk.LabelFrame(controls, text="选择比赛题目", padding=control_padding)
+        modes.pack(fill="x", pady=(section_gap, 0))
         modes.columnconfigure(0, weight=1, uniform="competition_mode")
         modes.columnconfigure(1, weight=1, uniform="competition_mode")
         self.mode_buttons: list[ttk.Button] = []
-        for index, (mode, note) in enumerate((
-            (SELF_TRANSFER_MODE, "固定4块\n直接搬运到指定区域"),
-            (SELF_ASSEMBLY_MODE, "固定4块\n轮廓几何拼接"),
-            (FIELD_WHITE_MODE, "自动识别1～4块\n白色碎片几何拼接"),
-            (PLAYING_CARD_MODE, "自动识别1～4块\n几何+牌面接缝匹配"),
-        )):
+        mode_specs = (
+            (SELF_TRANSFER_MODE, "固定4块\n直接搬运到指定区域", 0, 0, 1),
+            (SELF_ASSEMBLY_MODE, "固定4块\n轮廓几何拼接", 0, 1, 1),
+            (FIELD_WHITE_MODE, "自动识别1～4块\n白色碎片几何拼接", 1, 0, 2),
+            (PLAYING_CARD_MODE, "自动识别1～4块\n宽松几何+图案剖面", 2, 0, 1),
+            (PLAYING_CARD_V2_MODE, "自动识别1～4块\n复合边+滑动接缝", 2, 1, 1),
+        )
+        for mode, note, row, column, columnspan in mode_specs:
+            button_text = mode.title if self.compact_layout else f"{mode.title}\n{note}"
             button = ttk.Button(
                 modes,
-                text=f"{mode.title}\n{note}",
+                text=button_text,
                 style="Mode.TButton",
                 command=lambda selected=mode: self._start_competition(selected),
             )
             button.grid(
-                row=index // 2,
-                column=index % 2,
+                row=row,
+                column=column,
+                columnspan=columnspan,
                 sticky="nsew",
-                padx=(0, 4) if index % 2 == 0 else (4, 0),
-                pady=(0, 6) if index < 2 else (0, 0),
+                padx=(0, 4) if columnspan == 1 and column == 0
+                else ((4, 0) if columnspan == 1 else (0, 0)),
+                pady=(0, 3 if self.compact_layout else 6) if row < 2 else (0, 0),
             )
             self.mode_buttons.append(button)
 
-        state_box = ttk.LabelFrame(controls, text="当前流程", padding=8)
-        state_box.pack(fill="x", pady=(8, 0))
+        state_box = ttk.LabelFrame(controls, text="当前流程", padding=control_padding)
+        state_box.pack(fill="x", pady=(section_gap, 0))
         for variable in (
             self.camera_state,
             self.serial_state,
@@ -205,44 +245,57 @@ class CompetitionApp(PuzzleControlApp):
             self.task_state,
         ):
             ttk.Label(
-                state_box, textvariable=variable, wraplength=365, justify="left"
-            ).pack(fill="x", pady=1)
+                state_box, textvariable=variable,
+                wraplength=285 if self.compact_layout else 365,
+                justify="left",
+                font=_ui_font(8 if self.compact_layout else 9),
+            ).pack(fill="x", pady=0 if self.compact_layout else 1)
 
-        task_box = ttk.LabelFrame(controls, text="任务进度", padding=6)
-        task_box.pack(fill="both", expand=True, pady=(8, 0))
-        self.task_list = tk.Listbox(task_box, font=("Consolas", 9), height=5)
+        task_box = ttk.LabelFrame(
+            controls, text="任务进度", padding=4 if self.compact_layout else 6
+        )
+        task_box.pack(fill="both", expand=True, pady=(section_gap, 0))
+        self.task_list = tk.Listbox(
+            task_box, font=("Consolas", 8 if self.compact_layout else 9),
+            height=3 if self.compact_layout else 5,
+        )
         self.task_list.pack(fill="both", expand=True)
 
         buttons = ttk.Frame(controls)
-        buttons.pack(fill="x", pady=(8, 0))
+        buttons.pack(fill="x", pady=(section_gap, 0))
         self.stop_competition_button = ttk.Button(
             buttons,
-            text="停止后续任务（当前块不会急停）",
+            text="完全停止" if self.compact_layout else "完全停止上位机流程（不发下位机命令）",
             style="Danger.TButton",
             command=self._stop_competition,
         )
         self.stop_competition_button.pack(side="left", fill="x", expand=True)
-        ttk.Button(buttons, text="复位界面", command=self._reset_competition_ui).pack(
-            side="left", padx=(8, 0)
+        ttk.Button(buttons, text="复位", command=self._reset_competition_ui).pack(
+            side="left", padx=(4 if self.compact_layout else 8, 0)
         )
         ttk.Button(
             buttons,
-            text="刷新当前状态",
+            text="刷新" if self.compact_layout else "刷新当前状态",
             command=self._refresh_competition_state,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=(4 if self.compact_layout else 8, 0))
         self.retry_button = ttk.Button(
-            controls, text="再次运行上一题", command=self._retry_last_competition
+            controls,
+            text="再次运行" if self.compact_layout else "再次运行上一题",
+            command=self._retry_last_competition,
         )
-        self.retry_button.pack(fill="x", pady=(6, 0))
+        self.retry_button.pack(fill="x", pady=(3 if self.compact_layout else 6, 0))
 
     def _build_debug_page(self, page: ttk.Frame) -> None:
         page.columnconfigure(0, weight=3)
-        page.columnconfigure(1, weight=2, minsize=410)
+        page.columnconfigure(1, weight=2, minsize=320 if self.compact_layout else 410)
         page.rowconfigure(0, weight=1)
 
         left = ttk.Frame(page)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        debug_image = ttk.LabelFrame(left, text="相机 / 当前方案", padding=5)
+        left.grid(row=0, column=0, sticky="nsew",
+                  padx=(0, 4 if self.compact_layout else 8))
+        debug_image = ttk.LabelFrame(
+            left, text="相机 / 当前方案", padding=3 if self.compact_layout else 5
+        )
         debug_image.pack(fill="both", expand=True)
         self.debug_canvas = tk.Canvas(
             debug_image, background="#202326", highlightthickness=0
@@ -256,9 +309,14 @@ class CompetitionApp(PuzzleControlApp):
         self.roi_drag_start = None
         self.roi_drag_current = None
 
-        log_box = ttk.LabelFrame(left, text="带时间戳的运行与通信日志", padding=5)
-        log_box.pack(fill="x", pady=(8, 0))
-        self.log = tk.Text(log_box, height=8, wrap="word", state="disabled", font=("Consolas", 9))
+        log_box = ttk.LabelFrame(left, text="带时间戳的运行与通信日志",
+                                 padding=3 if self.compact_layout else 5)
+        log_box.pack(fill="x", pady=(4 if self.compact_layout else 8, 0))
+        self.log = tk.Text(
+            log_box, height=4 if self.compact_layout else 8,
+            wrap="word", state="disabled",
+            font=("Consolas", 8 if self.compact_layout else 9),
+        )
         self.log.pack(fill="x")
 
         right_container = ttk.Frame(page)
@@ -274,7 +332,11 @@ class CompetitionApp(PuzzleControlApp):
         self.debug_controls_canvas.configure(yscrollcommand=debug_scrollbar.set)
         self.debug_controls_canvas.grid(row=0, column=0, sticky="nsew")
         debug_scrollbar.grid(row=0, column=1, sticky="ns")
-        right = ttk.Frame(self.debug_controls_canvas, padding=(0, 0, 6, 8))
+        right = ttk.Frame(
+            self.debug_controls_canvas,
+            padding=(0, 0, 3 if self.compact_layout else 6,
+                     4 if self.compact_layout else 8),
+        )
         self.debug_controls_window = self.debug_controls_canvas.create_window(
             (0, 0), window=right, anchor="nw"
         )
@@ -329,9 +391,15 @@ class CompetitionApp(PuzzleControlApp):
         ).pack(anchor="w", pady=(3, 0))
         ttk.Radiobutton(
             plan_box,
-            text="2（2）扑克牌 / 几何 + Lab 接缝",
+            text="2（2）扑克牌 / 宽松几何 + 图案剖面",
             variable=self.debug_planning_method,
             value="card",
+        ).pack(anchor="w")
+        ttk.Radiobutton(
+            plan_box,
+            text="2（2）法2 / 复合边 + 滑动接缝（实验）",
+            variable=self.debug_planning_method,
+            value="card2",
         ).pack(anchor="w")
         self.piece_count_buttons = []
         self.calculate_plan_button = ttk.Button(
@@ -344,6 +412,13 @@ class CompetitionApp(PuzzleControlApp):
         ttk.Button(plan_box, text="重新加载最新方案", command=self._load_plan).pack(
             fill="x", pady=(6, 0)
         )
+        self.candidate_gallery_button = ttk.Button(
+            plan_box,
+            text="查看前5名候选",
+            command=self._toggle_candidate_gallery,
+            state="disabled",
+        )
+        self.candidate_gallery_button.pack(fill="x", pady=(6, 0))
         direction = ttk.Frame(plan_box)
         direction.pack(fill="x", pady=(6, 0))
         ttk.Label(direction, text="舵机方向").pack(side="left")
@@ -460,8 +535,8 @@ class CompetitionApp(PuzzleControlApp):
             frame = cv2.rotate(frame, cv2.ROTATE_180)
         try:
             BACKGROUND_PATH.parent.mkdir(parents=True, exist_ok=True)
-            if not cv2.imwrite(str(BACKGROUND_PATH), frame):
-                raise OSError("cv2.imwrite returned false")
+            if not write_image(BACKGROUND_PATH, frame):
+                raise OSError("image write returned false")
         except (OSError, cv2.error) as exc:
             messagebox.showerror("保存背景失败", f"无法保存背景图：{exc}")
             return
@@ -571,6 +646,45 @@ class CompetitionApp(PuzzleControlApp):
         if not self._allow_plan_loading:
             return
         super()._load_plan(show_errors)
+        available = False
+        if self.tasks and not self.competition_active:
+            try:
+                document = json.loads(PLAN_PATH.read_text(encoding="utf-8"))
+                available = bool(document.get("candidate_gallery_available"))
+            except (OSError, json.JSONDecodeError, TypeError):
+                available = False
+        self._set_candidate_gallery_available(available)
+
+    def _set_candidate_gallery_available(self, available: bool) -> None:
+        """Reset the preview switch whenever a plan is loaded or replaced."""
+        self.showing_candidate_gallery = False
+        self.candidate_gallery_available = bool(
+            available and CARD_CANDIDATE_GALLERY_PATH.exists()
+        )
+        button = getattr(self, "candidate_gallery_button", None)
+        if button is not None:
+            button.configure(
+                text="查看前5名候选",
+                state="normal" if self.candidate_gallery_available else "disabled",
+            )
+
+    def _toggle_candidate_gallery(self) -> None:
+        """Switch the debug canvas between the normal overlay and top-five gallery."""
+        if not self.candidate_gallery_available:
+            messagebox.showinfo("暂无候选预览", "请先用 2（2）法1或法2计算一份方案。")
+            return
+        show_gallery = not self.showing_candidate_gallery
+        image_path = CARD_CANDIDATE_GALLERY_PATH if show_gallery else PREVIEW_PATH
+        preview = read_image(image_path, cv2.IMREAD_COLOR)
+        if preview is None:
+            messagebox.showwarning("预览不可用", f"无法读取预览图片：{image_path}")
+            return
+        self.preview = preview
+        self.showing_candidate_gallery = show_gallery
+        self.candidate_gallery_button.configure(
+            text="返回正常预览" if show_gallery else "查看前5名候选"
+        )
+        self._draw_image()
 
     def _plan_geometry_is_verified(self, document: dict) -> bool:
         quality = document.get("quality", {})
@@ -580,9 +694,12 @@ class CompetitionApp(PuzzleControlApp):
             (
                 self.competition_active
                 and self.competition_mode is not None
-                and self.competition_mode.planning_method == "texture"
+                and self.competition_mode.planning_method in ("texture", "texture_v2")
             )
-            or (not self.competition_active and self.debug_planning_method.get() == "card")
+            or (
+                not self.competition_active
+                and self.debug_planning_method.get() in ("card", "card2")
+            )
         ):
             return (
                 quality.get("geometry_verified") is True
@@ -601,6 +718,7 @@ class CompetitionApp(PuzzleControlApp):
             return
 
         self._prepare_new_competition_run()
+        self.ignore_controller_status_until_next_run = False
         self.competition_active = True
         self.competition_mode = mode
         self.last_competition_mode = mode
@@ -622,8 +740,11 @@ class CompetitionApp(PuzzleControlApp):
             self.plan_state.set("自备拼图：正在稳定识别4块碎片…")
             self.status.set("优先匹配固定四块100×60模板；失败后尝试通用拼接，再自动保底搬运。")
         elif mode.planning_method == "texture":
-            self.plan_state.set("扑克牌：正在稳定识别1～4块碎片…")
-            self.status.set("将先筛选可靠矩形方案，再用牌面花纹接缝连续性确定排列。")
+            self.plan_state.set("扑克牌法1：正在稳定识别1～4块碎片…")
+            self.status.set("先宽松枚举矩形候选，再用牌面图案剖面、长宽比和圆角软提示排序。")
+        elif mode.planning_method == "texture_v2":
+            self.plan_state.set("扑克牌法2：正在稳定识别1～4块碎片…")
+            self.status.set("正在使用复合边、滑动接缝和整体评分算法计算扑克牌拼接方案。")
 
     def _prepare_new_competition_run(self) -> None:
         """Discard old run state without touching calibration or saved parameters."""
@@ -718,15 +839,24 @@ class CompetitionApp(PuzzleControlApp):
                 )
                 return "solve", document, preview
         if (
-            self.competition_active
-            and self.competition_mode is not None
-            and self.competition_mode.planning_method == "texture"
+            (
+                self.competition_active
+                and self.competition_mode is not None
+                and self.competition_mode.planning_method == "texture_v2"
+            )
+            or (
+                not self.competition_active
+                and self.debug_planning_method.get() == "card2"
+            )
         ):
-            assembly = solve_textured_assembly(
+            card_config = relaxed_card_config(config)
+            if not self.competition_active:
+                write_image(CARD2_SOURCE_FRAME_PATH, frame)
+            assembly = solve_composite_card_assembly(
                 frame,
                 [piece.polygon for piece in pieces],
                 roi,
-                config,
+                card_config,
                 require_upper_half=True,
             )
 
@@ -739,12 +869,64 @@ class CompetitionApp(PuzzleControlApp):
                 assembly,
                 pulse_mapper=to_pulse,
                 calibration_file=calibration_name,
-                config=config,
+                config=card_config,
             )
-            document["planning_method"] = "geometry_texture_seam"
+            document["planning_method"] = "experimental_composite_card_v2"
             preview = draw_assembly_preview(
-                draw_piece_observations(frame, pieces), pieces, assembly, config
+                draw_piece_observations(frame, pieces),
+                pieces,
+                assembly,
+                card_config,
             )
+            gallery_available = False
+            if not self.competition_active and assembly.candidate_diagnostics:
+                gallery = draw_card_candidate_gallery(frame, assembly, card_config)
+                gallery_available = write_image(CARD_CANDIDATE_GALLERY_PATH, gallery)
+            document["candidate_gallery_available"] = gallery_available
+            return "solve", document, preview
+        if (
+            (
+                self.competition_active
+                and self.competition_mode is not None
+                and self.competition_mode.planning_method == "texture"
+            )
+            or (
+                not self.competition_active
+                and self.debug_planning_method.get() == "card"
+            )
+        ):
+            card_config = relaxed_card_config(config)
+            assembly = solve_textured_assembly(
+                frame,
+                [piece.polygon for piece in pieces],
+                roi,
+                card_config,
+                require_upper_half=True,
+            )
+
+            def to_pulse(point: tuple[float, float]) -> tuple[int, int]:
+                x, y = calibration.predict_pulse(*point)
+                return round(x), round(y)
+
+            document = build_movement_plan(
+                pieces,
+                assembly,
+                pulse_mapper=to_pulse,
+                calibration_file=calibration_name,
+                config=card_config,
+            )
+            document["planning_method"] = "relaxed_card_geometry_pattern_profile"
+            preview = draw_assembly_preview(
+                draw_piece_observations(frame, pieces),
+                pieces,
+                assembly,
+                card_config,
+            )
+            gallery_available = False
+            if not self.competition_active and assembly.candidate_diagnostics:
+                gallery = draw_card_candidate_gallery(frame, assembly, card_config)
+                gallery_available = write_image(CARD_CANDIDATE_GALLERY_PATH, gallery)
+            document["candidate_gallery_available"] = gallery_available
             return "solve", document, preview
         if (
             (
@@ -786,11 +968,16 @@ class CompetitionApp(PuzzleControlApp):
         if (
             self.competition_active
             and self.competition_mode is not None
-            and self.competition_mode.planning_method == "texture"
+            and self.competition_mode.planning_method in ("texture", "texture_v2")
         ):
+            method_name = "法2" if self.competition_mode.planning_method == "texture_v2" else "法1"
             return (
-                f"扑克牌：{piece_count} 块已稳定，正在匹配几何和牌面花纹…",
-                "正在比较可靠矩形候选的接缝颜色连续性，花纹断裂最小的方案优先。",
+                f"扑克牌{method_name}：{piece_count} 块已稳定，正在计算拼接方案…",
+                (
+                    "正在枚举复合边和滑动接缝，并使用整体矩形与纹理评分排序。"
+                    if method_name == "法2"
+                    else "正在比较宽松矩形候选的牌面图案位置、颜色变化和接缝连续性。"
+                ),
             )
         return super()._planning_progress_text(piece_count)
 
@@ -861,6 +1048,14 @@ class CompetitionApp(PuzzleControlApp):
             self._finish_competition("failed", f"拼接方案失败：{exc}")
 
     def _handle_status(self, status: int) -> None:
+        if (
+            self.ignore_controller_status_until_next_run
+            and not self.serial_health_check_pending
+        ):
+            self._append_log(
+                f"STATUS {status:02X} IGNORED: competition was fully stopped by operator"
+            )
+            return
         super()._handle_status(status)
         if self.competition_active and status in (
             STATUS_COMMAND_REJECTED,
@@ -869,6 +1064,10 @@ class CompetitionApp(PuzzleControlApp):
             self._finish_competition("failed", f"下位机返回故障状态 {status:02X}")
 
     def _transmit_task(self, task) -> bool:
+        # An explicit new motion command starts a new controller interaction;
+        # stale-stop filtering is no longer needed. B1/B3 received before B0
+        # are still rejected by the base protocol state machine.
+        self.ignore_controller_status_until_next_run = False
         sent = super()._transmit_task(task)
         if self.competition_active and not sent:
             self._finish_competition("failed", f"P{task.piece_id} 串口发送失败")
@@ -913,16 +1112,74 @@ class CompetitionApp(PuzzleControlApp):
         self.run_log_path = None
 
     def _stop_competition(self) -> None:
-        if not self.competition_active:
+        if not (
+            self.competition_active
+            or self.planning_active
+            or self.waiting_for_completion
+            or self.auto_run_enabled
+            or self.tasks
+        ):
             self.status.set("当前没有正在运行的比赛流程。")
             return
+
+        elapsed = self._elapsed_seconds()
+        had_in_flight_action = self.waiting_for_completion
+
+        # Stop every PC-side continuation without transmitting any serial
+        # command. The STM32 may finish an already accepted mechanical action,
+        # but its subsequent B0/B1/B2/B3 frames are deliberately ignored until
+        # the operator starts a new competition run.
+        self.competition_active = False
+        self.competition_waiting_for_serial = False
+        self.competition_finished_elapsed = elapsed
+        self.competition_result = "stopped"
         self.planning_active = False
+        self.planning_expected_piece_count = None
         self.planning_generation += 1
         if self.planning_future is not None:
             self.planning_future.cancel()
+            self.planning_future = None
+            self.planning_future_generation = None
+        self.planning_tracker.reset("比赛已完全停止")
+        self.auto_run_enabled = False
+        self.waiting_for_completion = False
         self.waiting_for_accept = False
         self._cancel_accept_timeout()
-        self._finish_competition("stopped", "操作员停止了后续任务")
+        self._cancel_auto_continue()
+        self._cancel_serial_health_check()
+        self.ignore_controller_status_until_next_run = True
+        self.status_parser.reset()
+        if self.serial.connected:
+            try:
+                self.serial.discard_input()
+            except Exception as exc:
+                self._append_log(f"STOP INPUT DISCARD FAILED: {exc}")
+        self.tasks = []
+        self.current_task_index = 0
+        self._refresh_task_list()
+        self._set_piece_count_controls_enabled(True)
+        self._set_mode_buttons_enabled(True)
+        self.plan_state.set("方案：已完全停止并清空")
+        self.task_state.set("任务：已停止，无后续发送")
+        self.controller_state.set("下位机：上位机已停止处理本轮状态")
+        self._set_competition_state(
+            f"已停止：{format_competition_time(elapsed)}", "#ffb0a8", "#68150d"
+        )
+        self._append_log(
+            "COMPETITION HARD STOP (PC ONLY): all continuations cleared; "
+            f"in_flight_action={had_in_flight_action}; no frame transmitted"
+        )
+        self.run_log_path = None
+        if had_in_flight_action:
+            self.status.set(
+                "上位机比赛流程已完全停止，不会再处理或提示本轮下位机状态；"
+                "停止前已经发出的当前机械动作仍会由下位机自行完成。"
+            )
+        else:
+            self.status.set(
+                "上位机比赛流程已完全停止：识别、计算、等待和后续发送均已清空；"
+                "没有向下位机发送任何停止命令。"
+            )
 
     def _reset_competition_ui(self) -> None:
         if self.competition_active or self.waiting_for_completion:
@@ -938,6 +1195,7 @@ class CompetitionApp(PuzzleControlApp):
         self.tasks = []
         self.current_task_index = 0
         self.preview = None
+        self._set_candidate_gallery_available(False)
         self._refresh_task_list()
         self.plan_state.set("方案：等待选择比赛题目")
         self.task_state.set("任务：尚未开始")
@@ -976,12 +1234,14 @@ class CompetitionApp(PuzzleControlApp):
         if self.planning_active:
             self._cancel_plan_calculation()
         else:
+            self._set_candidate_gallery_available(False)
             self._begin_plan_calculation(None)
 
     def _debug_fixed_plan(self, count: int) -> None:
         if self.planning_active:
             self._cancel_plan_calculation()
         else:
+            self._set_candidate_gallery_available(False)
             self._begin_plan_calculation(count)
 
     def _set_mode_buttons_enabled(self, enabled: bool) -> None:

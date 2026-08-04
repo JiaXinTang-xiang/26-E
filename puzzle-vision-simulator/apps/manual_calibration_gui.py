@@ -38,8 +38,18 @@ class ManualCalibrationApp:
                  rotate_180: bool = True):
         self.root = root
         self.root.title("拼图装置 - 相机到龙门架手动标定")
-        self.root.geometry("1320x830")
-        self.root.minsize(1080, 680)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        self.compact_layout = screen_width <= 1100 or screen_height <= 650
+        if self.compact_layout:
+            self.root.geometry(
+                f"{min(1000, max(900, screen_width - 24))}x"
+                f"{min(560, max(500, screen_height - 55))}+0+0"
+            )
+            self.root.minsize(900, 500)
+        else:
+            self.root.geometry("1320x830")
+            self.root.minsize(1080, 680)
         self.camera_index = camera_index
         self.rotate_180 = rotate_180
         self.capture = None
@@ -90,7 +100,7 @@ class ManualCalibrationApp:
         body = ttk.Panedwindow(self.root, orient="horizontal")
         body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         viewer = ttk.Frame(body)
-        controls_host = ttk.Frame(body, width=410)
+        controls_host = ttk.Frame(body, width=300 if self.compact_layout else 410)
         body.add(viewer, weight=4)
         body.add(controls_host, weight=2)
 
@@ -152,7 +162,8 @@ class ManualCalibrationApp:
             row=0, column=0, sticky="ew")
         ttk.Button(test, text="2. 点击画面选择放棋点", command=lambda: self._arm_test_click("destination")).grid(
             row=0, column=1, sticky="ew", padx=(7, 0))
-        ttk.Label(test, textvariable=self.test_result, foreground="#155e75", wraplength=350,
+        ttk.Label(test, textvariable=self.test_result, foreground="#155e75",
+                  wraplength=265 if self.compact_layout else 350,
                   justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 4))
         ttk.Button(test, text="确定：执行取棋、放棋、回零", style="Step.TButton",
                    command=self._confirm_test_move).grid(
@@ -183,7 +194,8 @@ class ManualCalibrationApp:
         buttons.pack(fill="x", pady=(7, 0))
         ttk.Button(buttons, text="删除选中点", command=self._delete_selected).pack(side="left")
         ttk.Button(buttons, text="拟合稳定平均矩阵", command=self._fit).pack(side="right")
-        ttk.Label(points, textvariable=self.result, foreground="#155e75", wraplength=350,
+        ttk.Label(points, textvariable=self.result, foreground="#155e75",
+                  wraplength=265 if self.compact_layout else 350,
                   justify="left").pack(fill="x", pady=(7, 0))
         ttk.Button(points, text="保存到 configs/local/calibration.json",
                    command=self._save).pack(fill="x", pady=(7, 0))
@@ -509,7 +521,7 @@ class ManualCalibrationApp:
 
     def _save(self) -> None:
         try:
-            target = Path("configs/local/calibration.json")
+            target = CALIBRATION_PATH
             self.calibration.save(target, {
                 "camera_index": self.camera_index,
                 "camera_rotation_degrees": 180 if self.rotate_180 else 0,

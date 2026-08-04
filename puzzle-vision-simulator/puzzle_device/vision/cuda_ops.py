@@ -13,6 +13,8 @@ in device memory across the full pipeline.  Use the composite functions
 
 from __future__ import annotations
 
+import os
+
 import cv2
 import numpy as np
 
@@ -23,22 +25,62 @@ import numpy as np
 
 _cuda_checked: bool = False
 _cuda_available: bool = False
+_cuda_failure_reason: str | None = None
+
+_REQUIRED_CUDA_APIS = (
+    "createGaussianFilter",
+    "cvtColor",
+    "threshold",
+    "createMorphologyFilter",
+)
+
+
+def _cuda_is_disabled_by_environment() -> bool:
+    value = os.environ.get("PUZZLE_VISION_CUDA", "auto").strip().lower()
+    return value in {"0", "false", "off", "no", "cpu"}
+
+
+def _disable_cuda(reason: object) -> None:
+    """Disable the optional GPU path after a capability or runtime failure."""
+    global _cuda_checked, _cuda_available, _cuda_failure_reason
+    _cuda_checked = True
+    _cuda_available = False
+    _cuda_failure_reason = str(reason)
 
 
 def _check_cuda() -> bool:
-    """Lazily detect a working CUDA device (cached after first call)."""
-    global _cuda_checked, _cuda_available
+    """Lazily detect the complete CUDA API required by this pipeline."""
+    global _cuda_checked, _cuda_available, _cuda_failure_reason
     if _cuda_checked:
         return _cuda_available
     _cuda_checked = True
+    if _cuda_is_disabled_by_environment():
+        _cuda_failure_reason = "disabled by PUZZLE_VISION_CUDA"
+        return False
     try:
-        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-            cv2.cuda.setDevice(0)
-            _ = cv2.cuda_GpuMat(16, 16, cv2.CV_8UC1)
-            _cuda_available = True
-    except cv2.error:
-        pass
+        cuda_module = getattr(cv2, "cuda", None)
+        gpu_mat_type = getattr(cv2, "cuda_GpuMat", None)
+        if cuda_module is None or gpu_mat_type is None:
+            raise AttributeError("OpenCV CUDA Python bindings are unavailable")
+        missing = [name for name in _REQUIRED_CUDA_APIS if not hasattr(cuda_module, name)]
+        if missing:
+            raise AttributeError(f"missing OpenCV CUDA APIs: {', '.join(missing)}")
+        if cuda_module.getCudaEnabledDeviceCount() <= 0:
+            raise RuntimeError("no CUDA-enabled OpenCV device")
+        cuda_module.setDevice(0)
+        _ = gpu_mat_type(16, 16, cv2.CV_8UC1)
+        _cuda_available = True
+        _cuda_failure_reason = None
+    except (cv2.error, AttributeError, RuntimeError, TypeError) as exc:
+        _cuda_available = False
+        _cuda_failure_reason = str(exc)
     return _cuda_available
+
+
+def cuda_status() -> tuple[bool, str]:
+    """Return whether the optional pipeline is usable and a short reason."""
+    available = _check_cuda()
+    return available, "available" if available else (_cuda_failure_reason or "unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +99,8 @@ def segment_pieces_gpu(
 
     Keeps data on the GPU for blur → colour-convert → threshold →
     morphology, downloading only the final binary mask.  Returns the same
-    result as the CPU version but with ~40-50 % lower latency on Orin Nano
-    when the frame is 1280×720 or larger.
+    result as the CPU version. Actual performance depends on the OpenCV build,
+    frame size, and transfer overhead, so callers must keep a CPU fallback.
     """
     if not _check_cuda():
         raise _Fallback

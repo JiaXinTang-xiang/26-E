@@ -25,6 +25,7 @@ from puzzle_device.planning import (
     target_rectangle_pixels,
 )
 from puzzle_device.vision.camera import open_uvc_camera
+from puzzle_device.vision.image_io import read_image, write_image
 from puzzle_device.vision.case_replay import load_vision_case, save_vision_case
 from puzzle_device.vision.piece_vision import (
     DetectionConfig,
@@ -55,8 +56,18 @@ class PieceDetectionApp:
     def __init__(self, root: tk.Tk, camera_index: int, rotate_180: bool = True):
         self.root = root
         self.root.title("拼图装置 - 实物碎片识别（不控制电机）")
-        self.root.geometry("1480x880")
-        self.root.minsize(1160, 700)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        self.compact_layout = screen_width <= 1100 or screen_height <= 650
+        if self.compact_layout:
+            self.root.geometry(
+                f"{min(1000, max(900, screen_width - 24))}x"
+                f"{min(560, max(500, screen_height - 55))}+0+0"
+            )
+            self.root.minsize(900, 500)
+        else:
+            self.root.geometry("1480x880")
+            self.root.minsize(1160, 700)
         self.camera_index = camera_index
         self.rotate_180 = rotate_180
         self.capture: cv2.VideoCapture | None = None
@@ -150,7 +161,7 @@ class PieceDetectionApp:
         body = ttk.Panedwindow(self.root, orient="horizontal")
         body.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         image_pane = ttk.Frame(body)
-        controls_pane = ttk.Frame(body, width=420)
+        controls_pane = ttk.Frame(body, width=300 if self.compact_layout else 420)
         body.add(image_pane, weight=4)
         body.add(controls_pane, weight=2)
 
@@ -213,13 +224,15 @@ class PieceDetectionApp:
             side="left", fill="x", expand=True)
         ttk.Button(roi_buttons, text="清除 ROI", command=self._clear_roi).pack(
             side="left", fill="x", expand=True, padx=(7, 0))
-        ttk.Label(capture, textvariable=self.roi_state, wraplength=365,
+        ttk.Label(capture, textvariable=self.roi_state,
+                  wraplength=265 if self.compact_layout else 365,
                   foreground="#7c3f00", justify="left").pack(fill="x", pady=(6, 8))
         ttk.Button(capture, text="采集当前空桌面为背景", command=self._capture_background).pack(fill="x")
         ttk.Button(capture, text="清除背景，改用边缘颜色", command=self._clear_background).pack(
             fill="x", pady=(6, 0)
         )
-        ttk.Label(capture, textvariable=self.background_state, wraplength=365,
+        ttk.Label(capture, textvariable=self.background_state,
+                  wraplength=265 if self.compact_layout else 365,
                   foreground="#155e75", justify="left").pack(fill="x", pady=(7, 0))
         case_buttons = ttk.Frame(capture)
         case_buttons.pack(fill="x", pady=(8, 0))
@@ -273,7 +286,8 @@ class PieceDetectionApp:
         lock_box = ttk.LabelFrame(controls, text="稳定采样与结果锁定", padding=8)
         lock_box.pack(fill="x", pady=(9, 0))
         ttk.Label(lock_box, textvariable=self.stability_state, foreground="#7c3f00",
-                  wraplength=365, justify="left").pack(fill="x")
+                  wraplength=265 if self.compact_layout else 365,
+                  justify="left").pack(fill="x")
         lock_buttons = ttk.Frame(lock_box)
         lock_buttons.pack(fill="x", pady=(6, 0))
         self.pause_button = ttk.Button(
@@ -292,7 +306,8 @@ class PieceDetectionApp:
         planning_box = ttk.LabelFrame(controls, text="拼接与运动计划（仅计算）", padding=8)
         planning_box.pack(fill="x", pady=(9, 0))
         ttk.Label(planning_box, textvariable=self.planning_state, foreground="#7c3f00",
-                  wraplength=365, justify="left").pack(fill="x")
+                  wraplength=265 if self.compact_layout else 365,
+                  justify="left").pack(fill="x")
         self.plan_button = ttk.Button(
             planning_box, text="计算拼接方案", command=self._calculate_assembly,
             state="disabled",
@@ -301,14 +316,15 @@ class PieceDetectionApp:
         ttk.Label(
             planning_box,
             text="输出目标像素、XY 脉冲和旋转角；当前不会发送串口命令。",
-            foreground="#a01d1d", wraplength=365, justify="left",
+            foreground="#a01d1d", wraplength=265 if self.compact_layout else 365,
         ).pack(fill="x", pady=(5, 0))
 
         detected = ttk.LabelFrame(controls, text="当前识别结果", padding=10)
         detected.pack(fill="both", expand=True, pady=(9, 0))
         self.piece_list = tk.Listbox(detected, font=("Consolas", 9), height=12)
         self.piece_list.pack(fill="both", expand=True)
-        ttk.Label(detected, textvariable=self.matrix_state, foreground="#155e75", wraplength=365,
+        ttk.Label(detected, textvariable=self.matrix_state, foreground="#155e75",
+                  wraplength=265 if self.compact_layout else 365,
                   justify="left").pack(fill="x", pady=(7, 0))
 
         footer = ttk.Frame(self.root, padding=(14, 6))
@@ -734,7 +750,7 @@ class PieceDetectionApp:
             ASSEMBLY_PLAN_PATH.write_text(
                 json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            if not cv2.imwrite(str(ASSEMBLY_PREVIEW_PATH), preview):
+            if not write_image(ASSEMBLY_PREVIEW_PATH, preview):
                 raise OSError(f"无法保存预览图：{ASSEMBLY_PREVIEW_PATH}")
         except (OSError, RuntimeError, ValueError, cv2.error) as exc:
             self.planning_state.set("拼接方案：计算失败，请检查轮廓和 ROI")
@@ -1032,7 +1048,7 @@ class PieceDetectionApp:
         self._invalidate_assembly("背景已更新")
         self.background = self.current_frame.copy()
         BACKGROUND_PATH.parent.mkdir(parents=True, exist_ok=True)
-        if not cv2.imwrite(str(BACKGROUND_PATH), self.background):
+        if not write_image(BACKGROUND_PATH, self.background):
             messagebox.showerror("保存失败", f"无法保存背景图：{BACKGROUND_PATH}")
             return
         self.background_state.set(f"背景：已采集并保存到 {BACKGROUND_PATH}")
@@ -1097,7 +1113,7 @@ class PieceDetectionApp:
     def _load_saved_background(self) -> None:
         if not BACKGROUND_PATH.exists():
             return
-        background = cv2.imread(str(BACKGROUND_PATH), cv2.IMREAD_COLOR)
+        background = read_image(BACKGROUND_PATH, cv2.IMREAD_COLOR)
         if background is None:
             return
         self.background = background

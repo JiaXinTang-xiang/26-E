@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from puzzle_device.vision.piece_vision import DetectionConfig, PieceObservation
+from puzzle_device.vision.image_io import read_image, write_image
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,7 @@ def save_vision_case(
     images = {"frame.png": frame, "background.png": background,
               "mask.png": mask, "overlay.png": overlay, "edges.png": edges}
     for name, image in images.items():
-        if image is not None and not cv2.imwrite(str(case_path / name), image):
+        if image is not None and not write_image(case_path / name, image):
             raise OSError(f"cannot save vision case image: {case_path / name}")
     document = {
         "format": "puzzle-device.vision-case.v1",
@@ -60,11 +61,11 @@ def load_vision_case(path: Path) -> VisionCase:
     document = json.loads((path / "case.json").read_text(encoding="utf-8"))
     if document.get("format") != "puzzle-device.vision-case.v1":
         raise ValueError("unsupported vision case format")
-    frame = cv2.imread(str(path / "frame.png"), cv2.IMREAD_COLOR)
+    frame = read_image(path / "frame.png", cv2.IMREAD_COLOR)
     if frame is None:
         raise ValueError("vision case has no readable frame.png")
     background_path = path / "background.png"
-    background = cv2.imread(str(background_path), cv2.IMREAD_COLOR)
+    background = read_image(background_path, cv2.IMREAD_COLOR)
     if background_path.exists() and background is None:
         raise ValueError("vision case background.png cannot be read")
     roi_values = document.get("roi")

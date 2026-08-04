@@ -37,6 +37,7 @@ from puzzle_device.planning import (
     solve_assembly,
 )
 from puzzle_device.vision.camera import open_uvc_camera
+from puzzle_device.vision.image_io import read_image, write_image
 from puzzle_device.vision.piece_vision import (
     DetectionConfig,
     detect_piece_observations,
@@ -509,7 +510,7 @@ class PuzzleControlApp:
                 self._configure_planning_vision_profile(config)
             roi = self._load_planning_roi()
             calibration, calibration_name = self._load_planning_calibration()
-            background = cv2.imread(str(BACKGROUND_PATH), cv2.IMREAD_COLOR)
+            background = read_image(BACKGROUND_PATH, cv2.IMREAD_COLOR)
             if config.segmentation_method == "background" and background is None:
                 raise ValueError(f"背景差分模式缺少背景图：{BACKGROUND_PATH}")
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
@@ -641,8 +642,8 @@ class PuzzleControlApp:
                     ),
                     encoding="utf-8",
                 )
-                cv2.imwrite(str(FAILED_VISION_FRAME_PATH), frame)
-                cv2.imwrite(
+                write_image(FAILED_VISION_FRAME_PATH, frame)
+                write_image(
                     str(FAILED_VISION_OVERLAY_PATH),
                     draw_piece_observations(frame, pieces),
                 )
@@ -770,7 +771,7 @@ class PuzzleControlApp:
                 FAILED_PLAN_PATH.write_text(
                     json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                if cv2.imwrite(str(FAILED_PREVIEW_PATH), preview):
+                if write_image(FAILED_PREVIEW_PATH, preview):
                     diagnostic_note = f"\n失败方案已保存：{FAILED_PLAN_PATH}"
                 else:
                     diagnostic_note = f"\n失败数据已保存：{FAILED_PLAN_PATH}"
@@ -783,7 +784,7 @@ class PuzzleControlApp:
             PLAN_PATH.write_text(
                 json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-            if not cv2.imwrite(str(PREVIEW_PATH), preview):
+            if not write_image(PREVIEW_PATH, preview):
                 raise OSError(f"无法保存拼接预览：{PREVIEW_PATH}")
         except (OSError, TypeError, ValueError, cv2.error) as exc:
             self._finish_plan_failure(exc)
@@ -854,7 +855,7 @@ class PuzzleControlApp:
                 document, servo_home_angle=SERVO_HOME_ANGLE,
                 servo_direction=self.servo_direction.get(),
             )
-            preview = cv2.imread(str(PREVIEW_PATH), cv2.IMREAD_COLOR)
+            preview = read_image(PREVIEW_PATH, cv2.IMREAD_COLOR)
             if preview is None:
                 raise ValueError(f"无法读取拼接预览：{PREVIEW_PATH}")
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:

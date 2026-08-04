@@ -15,6 +15,7 @@ import numpy as np
 from puzzle_device.vision.cuda_ops import (
     _Fallback,
     _check_cuda,
+    _disable_cuda,
     segment_pieces_gpu,
 )
 
@@ -187,6 +188,8 @@ def segment_pieces(
         raise ValueError("image must be a non-empty BGR image")
     cfg = config or DetectionConfig()
     cfg.validate()
+    if background is not None and background.shape != image.shape:
+        raise ValueError("background and image must have the same shape")
 
     # -- try composite GPU pipeline (background subtraction only) -----------
     # GPU kernel-launch overhead dominates on small frames; only use it
@@ -195,7 +198,7 @@ def segment_pieces(
     if (
         cfg.segmentation_method == "background"
         and _check_cuda()
-        and image.size >= 500_000  # >0.5 Mpix
+        and image.shape[0] * image.shape[1] >= 500_000
     ):
         try:
             return segment_pieces_gpu(
@@ -204,8 +207,11 @@ def segment_pieces(
                 color_distance_threshold=cfg.color_distance_threshold,
                 morph_size=cfg.morphology_size,
             )
-        except _Fallback:
-            pass  # fall through to CPU below
+        except (_Fallback, cv2.error, AttributeError, RuntimeError, TypeError) as exc:
+            # Some CUDA-enabled OpenCV builds expose the device but omit one
+            # or more Python operators. Disable the optional path for the rest
+            # of this process and continue with the proven CPU implementation.
+            _disable_cuda(exc)
 
     # -- CPU path -----------------------------------------------------------
     blur_size = max(1, cfg.gaussian_blur_size | 1)
@@ -222,8 +228,6 @@ def segment_pieces(
         _, mask = cv2.threshold(gray, cfg.brightness_min, 255, cv2.THRESH_BINARY)
     else:
         if background is not None:
-            if background.shape != image.shape:
-                raise ValueError("background and image must have the same shape")
             reference = cv2.GaussianBlur(background, (blur_size, blur_size), 0)
             distance = _color_distance(blurred, reference)
         else:

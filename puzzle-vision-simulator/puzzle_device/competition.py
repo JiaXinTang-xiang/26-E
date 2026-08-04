@@ -25,13 +25,17 @@ SELF_ASSEMBLY_MODE = CompetitionMode(
 )
 FIELD_WHITE_MODE = CompetitionMode("requirement_2_1", "2（1）现场白色碎片", None)
 PLAYING_CARD_MODE = CompetitionMode(
-    "requirement_2_2", "2（2）扑克牌碎片", None, planning_method="texture"
+    "requirement_2_2", "2（2）扑克牌 法1", None, planning_method="texture"
+)
+PLAYING_CARD_V2_MODE = CompetitionMode(
+    "requirement_2_2_v2", "2（2）扑克牌 法2", None, planning_method="texture_v2"
 )
 COMPETITION_MODES = (
     SELF_TRANSFER_MODE,
     SELF_ASSEMBLY_MODE,
     FIELD_WHITE_MODE,
     PLAYING_CARD_MODE,
+    PLAYING_CARD_V2_MODE,
 )
 
 

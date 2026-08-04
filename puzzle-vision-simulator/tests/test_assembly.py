@@ -1,6 +1,7 @@
 """Tests for physical A4 assembly and movement-plan generation."""
 
 import unittest
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -9,7 +10,10 @@ from puzzle_device.planning import (
     AssemblyConfig,
     build_movement_plan,
     draw_assembly_preview,
+    draw_card_candidate_gallery,
+    solve_composite_card_assembly,
     solve_assembly,
+    solve_textured_assembly,
 )
 from puzzle_device.planning.assembly import (
     _apply,
@@ -20,6 +24,7 @@ from puzzle_device.planning.assembly import (
     a4_to_global_pixels,
     transform_global_points,
 )
+from puzzle_device.planning.composite_card import _rerank_geometry_qualified_layouts
 from puzzle_device.simulation.puzzle_sim import apply_h, random_cut, rigid
 from puzzle_device.vision.piece_vision import PieceObservation
 
@@ -37,6 +42,125 @@ def _place(polygons, config):
 
 
 class AssemblyTest(unittest.TestCase):
+    def test_relaxed_card_profile_accepts_noisy_card_ratio_candidate(self):
+        config = AssemblyConfig()
+        polygon = a4_to_global_pixels(
+            np.array([[0, 0], [89, 0], [89, 58], [0, 58]], float), ROI, config
+        )
+        image = np.full((720, 1280, 3), 230, np.uint8)
+        plan = solve_textured_assembly(
+            image, [polygon], ROI, config, require_upper_half=False
+        )
+        self.assertTrue(np.allclose(plan.recovered_size_mm, [89, 58], atol=0.2))
+        self.assertIsNotNone(plan.texture_score)
+
+    def test_card_candidate_gallery_renders_ranked_diagnostics(self):
+        config = AssemblyConfig()
+        polygons_a4 = [
+            np.array([[0, 0], [44, 0], [44, 58], [0, 58]], float),
+            np.array([[44, 0], [89, 0], [89, 58], [44, 58]], float),
+        ]
+        polygons = [a4_to_global_pixels(polygon, ROI, config) for polygon in polygons_a4]
+        image = np.full((720, 1280, 3), 230, np.uint8)
+        plan = solve_textured_assembly(
+            image, polygons, ROI, config, require_upper_half=False
+        )
+        self.assertGreaterEqual(len(plan.candidate_diagnostics), 1)
+        self.assertEqual(plan.candidate_diagnostics[0]["rank"], 1)
+        gallery = draw_card_candidate_gallery(image, plan, config)
+        self.assertEqual(gallery.ndim, 3)
+        self.assertGreater(gallery.shape[0], 0)
+        self.assertGreater(gallery.shape[1], 0)
+
+    def test_composite_card_method_is_separate_and_solves_simple_sliding_case(self):
+        config = AssemblyConfig()
+        polygons_a4 = [
+            np.array([[0, 0], [44, 0], [44, 57], [0, 57]], float),
+            np.array([[44, 0], [88, 0], [88, 57], [44, 57]], float),
+        ]
+        polygons = [a4_to_global_pixels(polygon, ROI, config) for polygon in polygons_a4]
+        image = np.full((720, 1280, 3), 230, np.uint8)
+        with patch.dict("os.environ", {"PUZZLE_CARD2_WORKERS": "1"}):
+            plan = solve_composite_card_assembly(
+                image, polygons, ROI, config, require_upper_half=False
+            )
+        self.assertTrue(np.allclose(plan.recovered_size_mm, [88, 57], atol=0.2))
+        self.assertGreater(plan.rectangle_fill_ratio, 0.99)
+        self.assertGreaterEqual(len(plan.candidate_diagnostics), 1)
+
+    def test_composite_card_texture_breaks_tie_between_strong_rectangles(self):
+        identity = np.eye(3)
+        placed = [np.zeros((3, 2), dtype=float) for _ in range(4)]
+
+        def item(total, geometry, texture, metrics):
+            return (
+                total, geometry, (identity,) * 4, (), placed,
+                metrics, texture, (texture,) * 3,
+            )
+
+        geometrically_best_but_wrong = item(
+            154.6, 117.9, 0.663,
+            ((85.7, 55.8), 0.971, 0.991, 0.979, 0.0, 0.079),
+        )
+        artwork_continuous = item(
+            283.8, 247.1, 0.625,
+            ((88.5, 55.8), 0.940, 0.985, 0.954, 0.0, 0.167),
+        )
+        weak_outer_shape = item(
+            360.0, 330.0, 0.610,
+            ((86.0, 55.8), 0.965, 1.0, 0.850, 0.0, 0.29),
+        )
+        ranked = _rerank_geometry_qualified_layouts([
+            geometrically_best_but_wrong, artwork_continuous, weak_outer_shape,
+        ])
+        self.assertIs(ranked[0], artwork_continuous)
+        self.assertIs(ranked[2], weak_outer_shape)
+
+    def test_card_ranking_prefers_repeated_layout_family_over_isolated_candidate(self):
+        config = AssemblyConfig(
+            card_family_bonus_per_support=12.0,
+            card_family_bonus_cap=36.0,
+        )
+        identity = np.eye(3)
+        square = np.array([[-2, -2], [2, -2], [2, 2], [-2, 2]], float)
+
+        def candidate(score, centers):
+            placed = tuple(square + np.asarray(center) for center in centers)
+            return (
+                score,
+                (identity, identity, identity, identity),
+                placed,
+                (88.0, 57.0),
+                0.94,
+                0.97,
+                0.96,
+                0.0,
+                0.0,
+                (),
+            )
+
+        isolated = candidate(10.0, [(0, 0), (28, 0), (0, 20), (28, 20)])
+        correct_family = [
+            candidate(
+                20.0 + offset,
+                [(0, 0), (20 + offset * 0.05, 0), (0, 28), (20, 28)],
+            )
+            for offset in (0.0, 1.0, 2.0, 3.0)
+        ]
+        image = np.full((720, 1280, 3), 230, np.uint8)
+        selected, _texture, _seams, diagnostics = _choose_candidate(
+            [isolated, *correct_family],
+            [square.copy() for _ in range(4)],
+            ROI,
+            config,
+            image,
+            prefer_fixed_card_shape=False,
+            card_mode=True,
+        )
+        self.assertIs(selected, correct_family[0])
+        self.assertEqual(diagnostics[0]["family_support"], 4)
+        self.assertEqual(diagnostics[0]["consensus_bonus"], 36.0)
+
     def test_two_piece_search_keeps_all_complete_edge_pairs(self):
         config = AssemblyConfig(two_piece_edge_relative_tolerance=1.0)
         first = np.array([[0, 0], [5, 0], [5, 4], [0, 4]], dtype=float)
@@ -67,7 +191,7 @@ class AssemblyTest(unittest.TestCase):
                   0.9, 0.95, 0.9, 0.0, 0.0, full_matches)
         original_shape = (12.0, (identity, identity), (), (100.0, 60.0),
                           0.9, 0.95, 0.9, 0.0, 0.0, full_matches)
-        selected, _texture, _seams = _choose_candidate(
+        selected, _texture, _seams, _diagnostics = _choose_candidate(
             [skinny, original_shape],
             [np.zeros((4, 2)), np.zeros((4, 2))],
             ROI,
@@ -86,7 +210,7 @@ class AssemblyTest(unittest.TestCase):
                           0.9, 0.95, 0.9, 0.0, 0.0, full)
         partial_candidate = (1.0, (identity, identity), (), (100.0, 60.0),
                              0.9, 0.95, 0.9, 0.0, 0.0, partial)
-        selected, _texture, _seams = _choose_candidate(
+        selected, _texture, _seams, _diagnostics = _choose_candidate(
             [partial_candidate, full_candidate],
             [np.zeros((4, 2)), np.zeros((4, 2))],
             ROI,

@@ -1,4 +1,8 @@
-# Install the JetPack-compatible system packages first:
-#   sudo apt install python3-tk python3-opencv python3-numpy v4l-utils
-# Then install the Python package that is not normally included in JetPack:
+# Target: Jetson Orin Nano / JetPack 6, Ubuntu 22.04, Python 3.10.
+# A classic Jetson Nano on JetPack 4 normally has Ubuntu 18.04 and Python 3.6;
+# it cannot run this Python-3.10+ project without an upgraded runtime.
+# The device already has OpenCV 4.10.0 with CUDA and NumPy. Do not replace
+# that OpenCV build with opencv-python or apt python3-opencv.
+# Install only the missing system tools first:
+#   sudo apt install python3-tk v4l-utils
 pyserial>=3.5
