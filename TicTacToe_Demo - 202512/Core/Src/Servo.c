@@ -28,6 +28,9 @@ void SERVO_SetAngle(uint16_t Angle)
 
 void SERVO_MoveToAngle(uint16_t Angle)
 {
+	uint16_t AngleDifference;
+	uint32_t MoveDelay;
+
 	if(Angle > SERVO_MAX_ANGLE)
 	{
 		Angle = SERVO_MAX_ANGLE;
@@ -38,6 +41,29 @@ void SERVO_MoveToAngle(uint16_t Angle)
 		return;
 	}
 
+	if(ServoCurrentAngle == 0xFFFFU)
+	{
+		MoveDelay = SERVO_INITIAL_MOVE_DELAY;
+	}
+	else
+	{
+		if(Angle >= ServoCurrentAngle)
+		{
+			AngleDifference = Angle - ServoCurrentAngle;
+		}
+		else
+		{
+			AngleDifference = ServoCurrentAngle - Angle;
+		}
+
+		MoveDelay = (uint32_t)AngleDifference * SERVO_MOVE_MS_PER_DEGREE
+				+ SERVO_SETTLE_DELAY;
+		if(MoveDelay > SERVO_MAX_MOVE_DELAY)
+		{
+			MoveDelay = SERVO_MAX_MOVE_DELAY;
+		}
+	}
+
 	SERVO_SetAngle(Angle);
-	HAL_Delay(SERVO_MOVE_DELAY);
+	HAL_Delay(MoveDelay);
 }

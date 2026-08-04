@@ -185,8 +185,47 @@ class CompetitionApp(PuzzleControlApp):
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda _event: self._draw_image())
 
-        controls = ttk.Frame(page)
-        controls.grid(row=0, column=1, sticky="nsew")
+        controls_container = ttk.Frame(page)
+        controls_container.grid(row=0, column=1, sticky="nsew")
+        controls_container.columnconfigure(0, weight=1)
+        controls_container.rowconfigure(0, weight=1)
+        self.competition_controls_canvas = tk.Canvas(
+            controls_container, highlightthickness=0, borderwidth=0
+        )
+        competition_scrollbar = ttk.Scrollbar(
+            controls_container,
+            orient="vertical",
+            command=self.competition_controls_canvas.yview,
+        )
+        self.competition_controls_canvas.configure(
+            yscrollcommand=competition_scrollbar.set
+        )
+        self.competition_controls_canvas.grid(row=0, column=0, sticky="nsew")
+        competition_scrollbar.grid(row=0, column=1, sticky="ns")
+        controls = ttk.Frame(
+            self.competition_controls_canvas,
+            padding=(0, 0, 3 if self.compact_layout else 6,
+                     4 if self.compact_layout else 8),
+        )
+        self.competition_controls_window = self.competition_controls_canvas.create_window(
+            (0, 0), window=controls, anchor="nw"
+        )
+        controls.bind("<Configure>", self._update_competition_scroll_region)
+        self.competition_controls_canvas.bind(
+            "<Configure>", self._resize_competition_controls
+        )
+        self.competition_controls_canvas.bind(
+            "<Enter>", self._enable_competition_mousewheel
+        )
+        self.competition_controls_canvas.bind(
+            "<Leave>", self._disable_competition_mousewheel
+        )
+        self.competition_controls_canvas.bind(
+            "<Button-4>", self._scroll_competition_controls
+        )
+        self.competition_controls_canvas.bind(
+            "<Button-5>", self._scroll_competition_controls
+        )
 
         self.timer_text = tk.StringVar(value="00:00.0")
         self.competition_state = tk.StringVar(value="待机：请选择题目")
@@ -284,6 +323,31 @@ class CompetitionApp(PuzzleControlApp):
             command=self._retry_last_competition,
         )
         self.retry_button.pack(fill="x", pady=(3 if self.compact_layout else 6, 0))
+
+    def _update_competition_scroll_region(self, _event=None) -> None:
+        self.competition_controls_canvas.configure(
+            scrollregion=self.competition_controls_canvas.bbox("all")
+        )
+
+    def _resize_competition_controls(self, event: tk.Event) -> None:
+        self.competition_controls_canvas.itemconfigure(
+            self.competition_controls_window, width=max(1, event.width)
+        )
+
+    def _enable_competition_mousewheel(self, _event=None) -> None:
+        self.root.bind_all("<MouseWheel>", self._scroll_competition_controls)
+        self.root.bind_all("<Button-4>", self._scroll_competition_controls)
+        self.root.bind_all("<Button-5>", self._scroll_competition_controls)
+
+    def _disable_competition_mousewheel(self, _event=None) -> None:
+        self.root.unbind_all("<MouseWheel>")
+        self.root.unbind_all("<Button-4>")
+        self.root.unbind_all("<Button-5>")
+
+    def _scroll_competition_controls(self, event: tk.Event) -> None:
+        step = self._mousewheel_step(event)
+        if step:
+            self.competition_controls_canvas.yview_scroll(step, "units")
 
     def _build_debug_page(self, page: ttk.Frame) -> None:
         page.columnconfigure(0, weight=3)

@@ -10,7 +10,16 @@
 
 #define SERVO_HOME_ANGLE             135U
 #define SERVO_PICKED_ANGLE            90U
-#define SERVO_MOVE_DELAY             400U
+
+/*
+ * 270-degree servo movement time depends on the commanded angle change.
+ * Keep a small settling delay after the estimated travel time so the Z axis
+ * never descends while the suction head is still rotating.
+ */
+#define SERVO_MOVE_MS_PER_DEGREE        5U
+#define SERVO_SETTLE_DELAY            250U
+#define SERVO_INITIAL_MOVE_DELAY      1000U
+#define SERVO_MAX_MOVE_DELAY          1800U
 
 void SERVO_Init(void);
 void SERVO_SetAngle(uint16_t Angle);
