@@ -632,9 +632,11 @@ def _assembly_worker_count(piece_count: int) -> int:
             return max(1, min(piece_count, int(configured)))
         except ValueError:
             return 1
-    # Process creation costs more than it saves for one/two pieces.  The Nano
-    # has four modest CPU cores and also needs headroom for camera/desktop I/O.
-    if piece_count < 3:
+    # The bounded current-profile search normally finishes before a spawned
+    # process pool can amortize its startup cost.  Keep it serial by default;
+    # set PUZZLE_ASSEMBLY_PARALLEL=1 after timing real worst-case contours.
+    # This also leaves Jetson Nano CPU time for the camera and GUI.
+    if piece_count < 3 or not os.environ.get("PUZZLE_ASSEMBLY_PARALLEL"):
         return 1
     is_arm = platform.machine().lower() in ("aarch64", "arm64", "armv7l")
     return max(1, min(piece_count, os.cpu_count() or 1, 2 if is_arm else 4))
@@ -650,6 +652,39 @@ def _matching_batches(polygons, config: AssemblyConfig, batch_size: int = 128):
             batch = []
     if batch:
         yield tuple(batch)
+
+
+def _record_assembly_result(
+    result: tuple | None,
+    matches: tuple,
+    config: AssemblyConfig,
+    best: tuple | None,
+    best_in_range: tuple | None,
+    best_any_size: tuple | None,
+    reliable_candidates: list[tuple],
+    size_candidates: list[tuple],
+) -> tuple[tuple | None, tuple | None, tuple | None]:
+    """Keep candidate bookkeeping identical for serial and parallel workers."""
+    if result is None:
+        return best, best_in_range, best_any_size
+    candidate = (*result, matches)
+    if best_any_size is None or result[0] < best_any_size[0]:
+        best_any_size = candidate
+    size_ok = (
+        target_size_is_accepted(result[3], config)
+        if config.solver_profile == "legacy_4_0"
+        else _candidate_size_is_plausible(result[3], config)
+    )
+    if not size_ok:
+        return best, best_in_range, best_any_size
+    if best_in_range is None or result[0] < best_in_range[0]:
+        best_in_range = candidate
+    size_candidates.append(candidate)
+    if _geometry_is_reliable(result, config):
+        if best is None or result[0] < best[0]:
+            best = candidate
+        reliable_candidates.append(candidate)
+    return best, best_in_range, best_any_size
 
 
 def _point_to_line_distance(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> float:
@@ -1234,32 +1269,46 @@ def solve_assembly(
     reliable_candidates = []
     size_candidates = []
     states = 0
-    for matches in _matching_sets(local_polygons, cfg):
-        states += 1
-        if states > cfg.max_states:
-            break
-        result = _assemble(local_polygons, matches, cfg)
-        if result is None:
-            continue
-        candidate = (*result, matches)
-        if best_any_size is None or result[0] < best_any_size[0]:
-            best_any_size = candidate
-        size_ok = (
-            target_size_is_accepted(result[3], cfg)
-            if cfg.solver_profile == "legacy_4_0"
-            else _candidate_size_is_plausible(result[3], cfg)
+    worker_count = _assembly_worker_count(len(local_polygons))
+    batches = _matching_batches(local_polygons, cfg)
+    if worker_count == 1:
+        evaluated_batches = (
+            _assemble_batch((local_polygons, batch, cfg)) for batch in batches
         )
-        if not size_ok:
-            continue
-        if best_in_range is None or result[0] < best_in_range[0]:
-            best_in_range = candidate
-        size_candidates.append(candidate)
-        if _geometry_is_reliable(result, cfg) and (
-            best is None or result[0] < best[0]
-        ):
-            best = candidate
-        if _geometry_is_reliable(result, cfg):
-            reliable_candidates.append(candidate)
+        for evaluated in evaluated_batches:
+            for matches, result in evaluated:
+                states += 1
+                if states > cfg.max_states:
+                    break
+                best, best_in_range, best_any_size = _record_assembly_result(
+                    result, matches, cfg, best, best_in_range, best_any_size,
+                    reliable_candidates, size_candidates,
+                )
+            if states > cfg.max_states:
+                break
+    else:
+        # The solver is exact for the same generated candidates.  Parallelize
+        # only the independent rigid-layout evaluations; retain their source
+        # order so equal-score selection remains deterministic.
+        with ProcessPoolExecutor(
+            max_workers=worker_count,
+            mp_context=mp.get_context("spawn"),
+        ) as executor:
+            evaluated_batches = executor.map(
+                _assemble_batch,
+                ((local_polygons, batch, cfg) for batch in batches),
+            )
+            for evaluated in evaluated_batches:
+                for matches, result in evaluated:
+                    states += 1
+                    if states > cfg.max_states:
+                        break
+                    best, best_in_range, best_any_size = _record_assembly_result(
+                        result, matches, cfg, best, best_in_range, best_any_size,
+                        reliable_candidates, size_candidates,
+                    )
+                if states > cfg.max_states:
+                    break
     if best_any_size is None:
         raise RuntimeError("未找到满足边长配对、闭合和矩形填充条件的拼接方案")
     if best_in_range is None:
