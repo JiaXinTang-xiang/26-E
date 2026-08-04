@@ -510,8 +510,9 @@ def _matching_sets(polygons, config: AssemblyConfig):
                 yield combo
 
 
-def _assemble(polygons, matches, config: AssemblyConfig):
-    edge_cache = [_edges(polygon) for polygon in polygons]
+def _assemble(polygons, matches, config: AssemblyConfig, edge_cache=None):
+    if edge_cache is None:
+        edge_cache = [_edges(polygon) for polygon in polygons]
     adjacency = [[] for _ in polygons]
     for match in matches:
         _, first, _first_edge, second, _second_edge, *_ = match
@@ -606,6 +607,49 @@ def _assemble(polygons, matches, config: AssemblyConfig):
         float(overlap_ratio),
         float(dimension_error),
     )
+
+
+def _assemble_batch(arguments: tuple) -> list[tuple[tuple, tuple | None]]:
+    """Evaluate one ordered candidate batch in an isolated worker process.
+
+    The candidate list and every scoring/gating operation are unchanged.  A
+    batch only reduces process-pool serialization overhead relative to sending
+    one tiny match tuple per job.
+    """
+    polygons, matches_batch, config = arguments
+    edge_cache = [_edges(polygon) for polygon in polygons]
+    return [
+        (matches, _assemble(polygons, matches, config, edge_cache))
+        for matches in matches_batch
+    ]
+
+
+def _assembly_worker_count(piece_count: int) -> int:
+    """Choose a conservative process count for exhaustive CPU geometry."""
+    configured = os.environ.get("PUZZLE_ASSEMBLY_WORKERS", "").strip()
+    if configured:
+        try:
+            return max(1, min(piece_count, int(configured)))
+        except ValueError:
+            return 1
+    # Process creation costs more than it saves for one/two pieces.  The Nano
+    # has four modest CPU cores and also needs headroom for camera/desktop I/O.
+    if piece_count < 3:
+        return 1
+    is_arm = platform.machine().lower() in ("aarch64", "arm64", "armv7l")
+    return max(1, min(piece_count, os.cpu_count() or 1, 2 if is_arm else 4))
+
+
+def _matching_batches(polygons, config: AssemblyConfig, batch_size: int = 128):
+    """Yield the original matching-set stream in bounded ordered batches."""
+    batch = []
+    for matches in _matching_sets(polygons, config):
+        batch.append(matches)
+        if len(batch) >= batch_size:
+            yield tuple(batch)
+            batch = []
+    if batch:
+        yield tuple(batch)
 
 
 def _point_to_line_distance(point: np.ndarray, start: np.ndarray, end: np.ndarray) -> float:
