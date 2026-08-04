@@ -1,4 +1,4 @@
-"""Temporary compatibility adapter for the existing 17-byte gantry command."""
+"""Compatibility adapter for the 17-byte gantry command protocol."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ FRAME_LENGTH = 0x0F
 FRAME_FOOTER = 0x55
 CMD_PICK_AND_PLACE = 0xA1
 CMD_PICK_AND_PLACE_DUAL_ANGLE = 0xA2
+CMD_PICK_AND_PLACE_DUAL_ANGLE_CONTINUE = 0xA3
 SERVO_COMMAND_MARKER = 0x5A5A
 
 STATUS_FRAME_LENGTH = 0x03
@@ -19,11 +20,13 @@ STATUS_COMMAND_ACCEPTED = 0xB0
 STATUS_ACTION_COMPLETE = 0xB1
 STATUS_COMMAND_REJECTED = 0xB2
 STATUS_ACTION_FAILED = 0xB3
+STATUS_ACTION_CONTINUE_READY = 0xB4
 STATUS_NAMES = {
     STATUS_COMMAND_ACCEPTED: "命令已接收",
     STATUS_ACTION_COMPLETE: "动作已完成并回零",
     STATUS_COMMAND_REJECTED: "命令校验失败或参数越界",
     STATUS_ACTION_FAILED: "正常运动计数停止，动作已中止",
+    STATUS_ACTION_CONTINUE_READY: "当前块完成，Z轴安全，XY保持当前位置",
 }
 
 
@@ -111,9 +114,14 @@ def build_pick_and_place_frame(
 
 def build_dual_angle_pick_and_place_frame(
     source_x: int, source_y: int, destination_x: int, destination_y: int,
-    *, pick_angle_deg: int, place_angle_deg: int,
+    *, pick_angle_deg: int, place_angle_deg: int, return_home: bool = True,
 ) -> bytes:
-    """Build an A2 frame carrying independent pick and place servo angles."""
+    """Build an A2/A3 frame carrying independent pick and place servo angles.
+
+    A2 returns every axis home after the placement. A3 is used only for an
+    intermediate automatic task: it raises Z and returns the servo home while
+    preserving the current XY position for the next absolute-coordinate task.
+    """
     values = (
         source_x, source_y, pick_angle_deg,
         destination_x, destination_y, place_angle_deg,
@@ -122,8 +130,13 @@ def build_dual_angle_pick_and_place_frame(
         raise ValueError("all pulse coordinates must fit an unsigned 16-bit value")
     if not 0 <= pick_angle_deg <= 270 or not 0 <= place_angle_deg <= 270:
         raise ValueError("servo angles must be between 0 and 270 degrees")
+    command = (
+        CMD_PICK_AND_PLACE_DUAL_ANGLE
+        if return_home
+        else CMD_PICK_AND_PLACE_DUAL_ANGLE_CONTINUE
+    )
     payload = struct.pack(
-        ">BHHHHHH", CMD_PICK_AND_PLACE_DUAL_ANGLE,
+        ">BHHHHHH", command,
         source_x, source_y, pick_angle_deg,
         destination_x, destination_y, place_angle_deg,
     )

@@ -91,6 +91,19 @@ static uint8_t WaitZMotion(void)
 	return 1;
 }
 
+static uint8_t FinishPlaceWithoutXYReset(void)
+{
+	FlagMotorZReset = 0;
+	DriveStepMotor(StepMotorZ, NegativeDir, MAXPosZ);
+	if(WaitZMotion() == 0) return 0;
+	PulseNumOfStepMotorZ = 0;
+	PosZ = 0;
+
+	SERVO_MoveToAngle(SERVO_HOME_ANGLE);
+	HAL_Delay(DrivePaulseTime);
+	return 1;
+}
+
 void ResetStepMotor(void)
 {
 	FlagReset = 1;
@@ -276,6 +289,62 @@ uint8_t TakeAndPutDownTheChessWithAngles(uint16_t LocationX0, uint16_t LocationY
 
 	HAL_Delay(DrivePaulseTime);
 	return PutDownTheChess(LocationX1, LocationY1, PlaceAngle);//Rotate to the place angle after XY reaches the target
+}
+
+uint8_t TakeAndPutDownTheChessWithAnglesContinuous(uint16_t LocationX0, uint16_t LocationY0, uint16_t LocationX1, uint16_t LocationY1, uint16_t PickAngle, uint16_t PlaceAngle)
+{
+	if(LocationX0 >= PosX)
+		DriveStepMotor(StepMotorX, PositiveDir, LocationX0 - PosX);
+	else
+		DriveStepMotor(StepMotorX, NegativeDir, PosX - LocationX0);
+
+	if(LocationY0 >= PosY)
+		DriveStepMotor(StepMotorY, PositiveDir, LocationY0 - PosY);
+	else
+		DriveStepMotor(StepMotorY, NegativeDir, PosY - LocationY0);
+
+	if(WaitXYMotion() == 0) return 0;
+	HAL_Delay(DrivePaulseTime);
+
+	SERVO_MoveToAngle(PickAngle);
+	HAL_Delay(DrivePaulseTime);
+
+	DriveStepMotor(StepMotorZ, PositiveDir, MAXPosZ);
+	if(WaitZMotion() == 0) return 0;
+
+	HAL_Delay(20);
+	ControlEM(1);
+	HAL_Delay(20);
+
+	DriveStepMotor(StepMotorZ, NegativeDir, MAXPosZ);
+	if(WaitZMotion() == 0) return 0;
+
+	HAL_Delay(DrivePaulseTime);
+
+	if(LocationX1 >= PosX)
+		DriveStepMotor(StepMotorX, PositiveDir, LocationX1 - PosX);
+	else
+		DriveStepMotor(StepMotorX, NegativeDir, PosX - LocationX1);
+
+	if(LocationY1 >= PosY)
+		DriveStepMotor(StepMotorY, PositiveDir, LocationY1 - PosY);
+	else
+		DriveStepMotor(StepMotorY, NegativeDir, PosY - LocationY1);
+
+	if(WaitXYMotion() == 0) return 0;
+	HAL_Delay(DrivePaulseTime);
+
+	SERVO_MoveToAngle(PlaceAngle);
+	HAL_Delay(DrivePaulseTime);
+
+	DriveStepMotor(StepMotorZ, PositiveDir, MAXPosZ);
+	if(WaitZMotion() == 0) return 0;
+
+	HAL_Delay(20);
+	ControlEM(0);
+	HAL_Delay(20);
+
+	return FinishPlaceWithoutXYReset();
 }
 
 void EnableStepMotor(uint8_t WhichMotor)//使能步进电机

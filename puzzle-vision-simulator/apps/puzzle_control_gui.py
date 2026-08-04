@@ -20,6 +20,7 @@ from puzzle_device.calibration.gantry_protocol import (
     OptionalSerialPort,
     STATUS_ACTION_FAILED,
     STATUS_ACTION_COMPLETE,
+    STATUS_ACTION_CONTINUE_READY,
     STATUS_COMMAND_ACCEPTED,
     STATUS_COMMAND_REJECTED,
     STATUS_NAMES,
@@ -93,6 +94,7 @@ class PuzzleControlApp:
         self.waiting_for_completion = False
         self.waiting_for_accept = False
         self.auto_run_enabled = False
+        self.current_command_continuous = False
         self.accept_timeout_job = None
         self.auto_continue_job = None
         self.tx_bytes = 0
@@ -241,7 +243,7 @@ class PuzzleControlApp:
         ttk.Label(
             execute,
             text=(
-                "自动模式仅在收到 B1 后发送下一块；若需中止后续任务，"
+                "自动模式中间块收到 B4 后继续，最后一块收到 B1 后完成；若需中止后续任务，"
                 "点击停止自动执行，当前正在执行的块不会被打断。"
             ),
             foreground="#a01d1d", wraplength=350, justify="left",
@@ -877,7 +879,7 @@ class PuzzleControlApp:
         self._update_task_state()
         self._refresh_task_list()
         self._draw_image()
-        self.status.set("方案已加载。每次只发送一块，完成回零后由人工确认推进。")
+        self.status.set("方案已加载。手动发送每块都会回零；自动模式中间块保留XY位置。")
 
     def _reload_tasks(self) -> None:
         if self.waiting_for_completion:
@@ -938,13 +940,13 @@ class PuzzleControlApp:
             "确认自动连续执行",
             f"将从 P{self.tasks[self.current_task_index].piece_id} 开始，自动连续执行"
             f"剩余 {remaining} 块。\n\n"
-            "每块必须收到下位机 B1（完成并回零）才会发送下一块。"
+            "中间块收到 B4（Z安全、XY保持）后发送下一块，最后一块收到 B1 并回零。"
             "执行期间请保持工作区无人、碎片位置稳定。\n\n确认开始吗？",
         ):
             return False
         self.auto_run_enabled = True
         self._append_log(f"AUTO START: {remaining} task(s) remaining")
-        self.status.set("自动连续执行已启动：等待每块 B1 后自动发送下一块。")
+        self.status.set("自动连续执行已启动：中间块等待B4，最后一块等待B1回零。")
         self._update_task_state()
         self._transmit_task(self.tasks[self.current_task_index])
         return True
@@ -959,16 +961,21 @@ class PuzzleControlApp:
         self._update_task_state()
         self._refresh_task_list()
         if self.waiting_for_completion:
-            self.status.set("自动执行已停止：当前块仍会完成，B1 后不会发送下一块。")
+            self.status.set("自动执行已停止：当前块仍会完成，3秒无新命令时下位机自动回零。")
         else:
             self.status.set("自动执行已停止：后续任务需要手动发送。")
 
     def _transmit_task(self, task) -> bool:
+        continue_without_home = bool(
+            self.auto_run_enabled
+            and self.current_task_index < len(self.tasks) - 1
+        )
         try:
             frame = build_dual_angle_pick_and_place_frame(
                 task.source_x, task.source_y, task.target_x, task.target_y,
                 pick_angle_deg=task.pick_angle_deg,
                 place_angle_deg=task.place_angle_deg,
+                return_home=not continue_without_home,
             )
             self.serial.discard_input()
             self.status_parser.reset()
@@ -980,15 +987,24 @@ class PuzzleControlApp:
             return False
         self.waiting_for_completion = True
         self.waiting_for_accept = True
+        self.current_command_continuous = continue_without_home
         self.accept_rx_start = self.rx_bytes
         self.tx_bytes += len(frame)
         self._update_serial_state()
         self.controller_state.set("下位机：命令已发送，等待 B0 接收确认")
-        self._append_log(f"TX P{task.piece_id}: {frame.hex(' ').upper()}")
+        command_mode = "A3 CONTINUE" if continue_without_home else "A2 HOME"
+        self._append_log(
+            f"TX P{task.piece_id} {command_mode}: {frame.hex(' ').upper()}"
+        )
         self._update_task_state()
         self._refresh_task_list()
         self.status.set(
-            f"已发送 P{task.piece_id}。请等待机械执行并回零，再人工确认完成。")
+            (
+                f"已发送 P{task.piece_id}。中间块完成后将保持XY位置并自动继续。"
+                if continue_without_home
+                else f"已发送 P{task.piece_id}。请等待机械执行并回零。"
+            )
+        )
         self._cancel_accept_timeout()
         self.accept_timeout_job = self.root.after(1500, self._check_accept_status)
         return True
@@ -1034,7 +1050,7 @@ class PuzzleControlApp:
 
     def _confirm_completed_manually(self) -> None:
         if self.auto_run_enabled:
-            messagebox.showwarning("自动执行中", "自动模式会在收到 B1 后自行推进任务。")
+            messagebox.showwarning("自动执行中", "自动模式会在中间块B4或最后一块B1后自行推进。")
             return
         if self.current_task_index >= len(self.tasks):
             messagebox.showinfo("任务已完成", "当前方案没有尚未完成的任务。")
@@ -1107,6 +1123,7 @@ class PuzzleControlApp:
             )
             self.waiting_for_completion = False
             self.waiting_for_accept = False
+            self.current_command_continuous = False
             self._cancel_accept_timeout()
             self.auto_run_enabled = False
             self._cancel_auto_continue()
@@ -1118,10 +1135,29 @@ class PuzzleControlApp:
         if status == STATUS_ACTION_COMPLETE and self.waiting_for_accept:
             self._append_log("IGNORED STALE B1: current command has not received B0")
             return
+        if status == STATUS_ACTION_CONTINUE_READY and self.waiting_for_accept:
+            self._append_log("IGNORED STALE B4: current command has not received B0")
+            return
+        if status == STATUS_ACTION_CONTINUE_READY and self.waiting_for_completion:
+            if not getattr(self, "current_command_continuous", False):
+                self._append_log("IGNORED UNEXPECTED B4: current command requested homing")
+                return
+            self.waiting_for_accept = False
+            self._cancel_accept_timeout()
+            self.controller_state.set("下位机：已收到 B4，Z轴安全，XY保持当前位置")
+            if self.auto_run_enabled:
+                self._append_log("AUTO CONTINUE READY: B4 received, scheduling next task")
+                self._complete_current_task(show_dialog=False)
+                if self.current_task_index < len(self.tasks):
+                    self.auto_continue_job = self.root.after(300, self._send_auto_next)
+                return
+            self.status.set("中间块已完成；下位机将在3秒无新命令时自动回零。")
+            return
         if status == STATUS_ACTION_COMPLETE and self.waiting_for_completion:
             self.waiting_for_accept = False
             self._cancel_accept_timeout()
             self.controller_state.set("下位机：已收到 B1，动作完成并回零")
+            self.current_command_continuous = False
             if self.auto_run_enabled:
                 self._append_log("AUTO COMPLETE: B1 received, scheduling next task")
                 self._complete_current_task(show_dialog=False)
@@ -1133,6 +1169,7 @@ class PuzzleControlApp:
     def _complete_current_task(self, show_dialog: bool = True) -> None:
         self.waiting_for_completion = False
         self.waiting_for_accept = False
+        self.current_command_continuous = False
         self._cancel_accept_timeout()
         self.current_task_index += 1
         self._update_task_state()
@@ -1145,7 +1182,7 @@ class PuzzleControlApp:
             self._on_all_tasks_complete(was_auto_run, show_dialog)
         else:
             if self.auto_run_enabled:
-                self.status.set("当前块已收到 B1，准备自动发送下一块。")
+                self.status.set("当前块完成，准备自动发送下一块。")
             else:
                 self.status.set("当前块已确认完成，可以发送下一块。")
 

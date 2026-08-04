@@ -157,7 +157,9 @@ uint8_t USART1_RecCommand(void) //串口接收数据处理
 			//HAL_UART_Transmit(&huart1,&temp,1,10); //调试回显，正式通信时关闭
 
 			if(RecBuf[0] == 0xAA && RecBuf[16] == 0x55 && RecBuf[15] == temp
-				&& (RecBuf[2] == COMMAND_PICK_AND_PLACE || RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE))
+				&& (RecBuf[2] == COMMAND_PICK_AND_PLACE
+					|| RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE
+					|| RecBuf[2] == COMMAND_DUAL_SERVO_CONTINUE))
 			{
 
 				PosBuf0[0] = RecBuf[3]<<8 | RecBuf[4]; //3个16位数据，源位置数据
@@ -167,7 +169,8 @@ uint8_t USART1_RecCommand(void) //串口接收数据处理
 				PosBuf1[1] = RecBuf[11]<<8 | RecBuf[12];
 				PosBuf1[2] = RecBuf[13]<<8 | RecBuf[14];
 				if(PosBuf0[0] <= MAXPosX && PosBuf0[1] <= MAXPosY && PosBuf1[0] <= MAXPosX && PosBuf1[1] <= MAXPosY
-					&& ((RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE
+					&& (((RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE
+						|| RecBuf[2] == COMMAND_DUAL_SERVO_CONTINUE)
 						&& PosBuf0[2] <= SERVO_MAX_ANGLE && PosBuf1[2] <= SERVO_MAX_ANGLE)
 						|| (RecBuf[2] == COMMAND_PICK_AND_PLACE
 							&& (PosBuf0[2] != SERVO_COMMAND_MARKER || PosBuf1[2] <= SERVO_MAX_ANGLE)))) //判断坐标和舵机角度范围

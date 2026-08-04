@@ -7,10 +7,12 @@ from unittest.mock import Mock, patch
 
 from puzzle_device.calibration.gantry_protocol import (
     CMD_PICK_AND_PLACE_DUAL_ANGLE,
+    CMD_PICK_AND_PLACE_DUAL_ANGLE_CONTINUE,
     GantryStatusParser,
     SERVO_COMMAND_MARKER,
     STATUS_ACTION_FAILED,
     STATUS_ACTION_COMPLETE,
+    STATUS_ACTION_CONTINUE_READY,
     STATUS_COMMAND_ACCEPTED,
     build_dual_angle_pick_and_place_frame,
     build_pick_and_place_frame,
@@ -23,6 +25,51 @@ from apps.puzzle_control_gui import PuzzleControlApp
 
 
 class ExecutionProtocolTest(unittest.TestCase):
+    @staticmethod
+    def _make_transmit_app(task_count, current_index, auto_run):
+        app = PuzzleControlApp.__new__(PuzzleControlApp)
+        app.tasks = [SimpleNamespace(piece_id=index) for index in range(task_count)]
+        app.current_task_index = current_index
+        app.auto_run_enabled = auto_run
+        app.serial = Mock()
+        app.status_parser = Mock()
+        app.rx_bytes = 0
+        app.tx_bytes = 0
+        app.accept_timeout_job = None
+        app.controller_state = Mock()
+        app.status = Mock()
+        app.root = Mock()
+        app._update_serial_state = Mock()
+        app._append_log = Mock()
+        app._update_task_state = Mock()
+        app._refresh_task_list = Mock()
+        app._cancel_accept_timeout = Mock()
+        return app
+
+    def test_auto_intermediate_task_uses_a3_without_homing(self):
+        app = self._make_transmit_app(4, 0, True)
+        task = SimpleNamespace(
+            piece_id=0, source_x=100, source_y=200, target_x=300, target_y=400,
+            pick_angle_deg=90, place_angle_deg=180,
+        )
+        self.assertTrue(PuzzleControlApp._transmit_task(app, task))
+        frame = app.serial.send.call_args.args[0]
+        self.assertEqual(frame[2], CMD_PICK_AND_PLACE_DUAL_ANGLE_CONTINUE)
+        self.assertTrue(app.current_command_continuous)
+
+    def test_auto_last_and_manual_tasks_use_a2_with_homing(self):
+        task = SimpleNamespace(
+            piece_id=3, source_x=100, source_y=200, target_x=300, target_y=400,
+            pick_angle_deg=90, place_angle_deg=180,
+        )
+        for current_index, auto_run in ((3, True), (0, False)):
+            with self.subTest(current_index=current_index, auto_run=auto_run):
+                app = self._make_transmit_app(4, current_index, auto_run)
+                self.assertTrue(PuzzleControlApp._transmit_task(app, task))
+                frame = app.serial.send.call_args.args[0]
+                self.assertEqual(frame[2], CMD_PICK_AND_PLACE_DUAL_ANGLE)
+                self.assertFalse(app.current_command_continuous)
+
     def test_transient_read_error_retries_without_closing_connection(self):
         app = PuzzleControlApp.__new__(PuzzleControlApp)
         app.serial_read_error_count = 0
@@ -73,6 +120,18 @@ class ExecutionProtocolTest(unittest.TestCase):
             CMD_PICK_AND_PLACE_DUAL_ANGLE, 100, 200, 93, 300, 400, 178
         ))
 
+    def test_continuous_dual_angle_command_keeps_17_byte_frame(self):
+        frame = build_dual_angle_pick_and_place_frame(
+            100, 200, 300, 400,
+            pick_angle_deg=93, place_angle_deg=178, return_home=False,
+        )
+        self.assertEqual(len(frame), 17)
+        values = struct.unpack(">BHHHHHH", frame[2:15])
+        self.assertEqual(values, (
+            CMD_PICK_AND_PLACE_DUAL_ANGLE_CONTINUE,
+            100, 200, 93, 300, 400, 178,
+        ))
+
     def test_status_parser_ignores_echo_and_handles_fragmentation(self):
         accepted = bytes([0xAA, 0x03, STATUS_COMMAND_ACCEPTED,
                           0x03 ^ STATUS_COMMAND_ACCEPTED, 0x55])
@@ -88,6 +147,13 @@ class ExecutionProtocolTest(unittest.TestCase):
         failed = bytes([0xAA, 0x03, STATUS_ACTION_FAILED,
                         0x03 ^ STATUS_ACTION_FAILED, 0x55])
         self.assertEqual(GantryStatusParser().feed(failed), [STATUS_ACTION_FAILED])
+
+    def test_status_parser_accepts_continue_ready(self):
+        ready = bytes([0xAA, 0x03, STATUS_ACTION_CONTINUE_READY,
+                       0x03 ^ STATUS_ACTION_CONTINUE_READY, 0x55])
+        self.assertEqual(
+            GantryStatusParser().feed(ready), [STATUS_ACTION_CONTINUE_READY]
+        )
 
     def test_status_parser_reset_discards_partial_frame(self):
         parser = GantryStatusParser()

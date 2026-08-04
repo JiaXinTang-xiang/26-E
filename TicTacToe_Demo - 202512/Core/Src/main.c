@@ -4,7 +4,7 @@
   * @file           : main.c
   * @brief          : Main program body
   ******************************************************************************
-	*桂林电子科技大学信息与通信学院 梁勇
+	*桂林电子科技大学信息与通信学院 
   ******************************************************************************
 本程序为STM32F103C8T6的板HAL库版本
   ******************************************************************************
@@ -70,6 +70,9 @@ extern volatile uint8_t UART1_Rx_flg;//串口接收数据的中断标志
 extern uint16_t PosBuf0[3];//取棋子的电源位置坐标
 extern uint16_t PosBuf1[3] ;//放棋子的目标位置坐标
 extern uint8_t RecBuf[];//串口接收缓冲
+
+static uint8_t ContinuousPositionPending = 0;
+static uint32_t ContinuousPositionTick = 0;
 uint16_t BeepCurrentMillis = 0;//蜂鸣器发声计时
 uint16_t BeepTime = 0;//蜂鸣器响的时长
 uint8_t FlagBeep = 0;//蜂鸣器工作标志
@@ -166,8 +169,13 @@ int main(void)
 			if(USART1_RecCommand() ==1)//命令解析取数据
 			{
 				uint8_t ActionResult;
+				ContinuousPositionPending = 0;
 				USART1_SendStatus(STATUS_COMMAND_ACCEPTED);
-				if(RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE)
+				if(RecBuf[2] == COMMAND_DUAL_SERVO_CONTINUE)
+				{
+					ActionResult = TakeAndPutDownTheChessWithAnglesContinuous(PosBuf0[0], PosBuf0[1], PosBuf1[0], PosBuf1[1], PosBuf0[2], PosBuf1[2]);
+				}
+				else if(RecBuf[2] == COMMAND_DUAL_SERVO_ANGLE)
 				{
 					ActionResult = TakeAndPutDownTheChessWithAngles(PosBuf0[0], PosBuf0[1], PosBuf1[0], PosBuf1[1], PosBuf0[2], PosBuf1[2]);
 				}
@@ -181,11 +189,30 @@ int main(void)
 					ActionResult = TakeAndPutDownTheChess(PosBuf0[0], PosBuf0[1], PosBuf1[0], PosBuf1[1], ServoAngle);//在指定位置取棋子，并按指定角度放置
 				}
 				if(ActionResult == 1)
-					USART1_SendStatus(STATUS_ACTION_COMPLETE);
+				{
+					if(RecBuf[2] == COMMAND_DUAL_SERVO_CONTINUE)
+					{
+						USART1_SendStatus(STATUS_ACTION_CONTINUE_READY);
+						ContinuousPositionPending = 1;
+						ContinuousPositionTick = HAL_GetTick();
+					}
+					else
+					{
+						USART1_SendStatus(STATUS_ACTION_COMPLETE);
+					}
+				}
 				else
 					USART1_SendStatus(STATUS_ACTION_FAILED);
 			}
 			HAL_UART_Receive_IT(&huart1, RecBuf, 17);//等待下一次的接收
+		}
+
+		if(ContinuousPositionPending == 1
+			&& HAL_GetTick() - ContinuousPositionTick >= 3000U)
+		{
+			ContinuousPositionPending = 0;
+			ResetStepMotor();
+			USART1_SendStatus(STATUS_ACTION_COMPLETE);
 		}
 
 
