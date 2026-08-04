@@ -13,9 +13,40 @@ from puzzle_device.competition import (
     SELF_TRANSFER_MODE,
     format_competition_time,
 )
+from puzzle_device.vision.stability import PieceStabilityTracker
 
 
 class CompetitionTest(unittest.TestCase):
+    def test_stability_relaxes_from_four_to_two_frames_after_30_seconds(self):
+        app = CompetitionApp.__new__(CompetitionApp)
+        app.competition_active = True
+        app.planning_active = True
+        app.planning_tracker = PieceStabilityTracker(required_frames=4)
+        app.plan_state = Mock()
+        app.status = Mock()
+        app._append_log = Mock()
+
+        self.assertFalse(app._relax_stability_after_wait(29.9))
+        self.assertEqual(app.planning_tracker.required_frames, 4)
+        self.assertTrue(app._relax_stability_after_wait(30.0))
+        self.assertEqual(app.planning_tracker.required_frames, 2)
+        self.assertFalse(app._relax_stability_after_wait(31.0))
+
+    def test_stability_does_not_relax_after_solver_has_started(self):
+        app = CompetitionApp.__new__(CompetitionApp)
+        app.competition_active = True
+        app.planning_active = True
+        app.planning_tracker = PieceStabilityTracker(required_frames=4)
+        app.planning_tracker.status = app.planning_tracker.status.__class__(
+            4, 4, True, "稳定，可确认锁定"
+        )
+        app.plan_state = Mock()
+        app.status = Mock()
+        app._append_log = Mock()
+
+        self.assertFalse(app._relax_stability_after_wait(30.0))
+        self.assertEqual(app.planning_tracker.required_frames, 4)
+
     def test_modes_use_fixed_four_or_auto_count(self):
         self.assertEqual(SELF_TRANSFER_MODE.expected_piece_count, 4)
         self.assertEqual(SELF_TRANSFER_MODE.planning_method, "transfer")

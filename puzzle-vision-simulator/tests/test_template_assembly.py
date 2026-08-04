@@ -2,6 +2,7 @@
 
 import math
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -107,6 +108,22 @@ class TemplateAssemblyTest(unittest.TestCase):
         observed_px = [a4_to_global_pixels(piece, ROI) for piece in template.pieces[:3]]
         with self.assertRaisesRegex(ValueError, "4块"):
             solve_self_assembly(observed_px, ROI, require_upper_half=False)
+
+    def test_competition_template_failure_skips_general_search(self):
+        template = load_self_piece_template()
+        polygons = [a4_to_global_pixels(piece + [45, 25], ROI) for piece in template.pieces]
+        with patch(
+            "puzzle_device.planning.assembly.load_self_piece_template",
+            side_effect=RuntimeError("template unavailable"),
+        ), patch("puzzle_device.planning.assembly.solve_assembly") as general_solver:
+            with self.assertRaisesRegex(RuntimeError, "固定模板匹配失败"):
+                solve_self_assembly(
+                    polygons,
+                    ROI,
+                    require_upper_half=False,
+                    allow_general_fallback=False,
+                )
+        general_solver.assert_not_called()
 
 
 if __name__ == "__main__":

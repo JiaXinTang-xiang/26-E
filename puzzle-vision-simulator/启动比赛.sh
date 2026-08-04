@@ -7,6 +7,7 @@ cd "$SCRIPT_DIR"
 CAMERA="${CAMERA:-0}"
 SERIAL="${SERIAL:-${SERIAL_PORT:-}}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+export PUZZLE_ASSEMBLY_WORKERS="${PUZZLE_ASSEMBLY_WORKERS:-2}"
 
 if [[ -z "$SERIAL" ]]; then
     for candidate in /dev/ttyCH341USB0 /dev/ttyCH340USB0 /dev/ttyUSB0 /dev/ttyUSB1 /dev/ttyACM0; do
@@ -52,6 +53,7 @@ echo "Python: $python_version"
 echo "相机: /dev/video${CAMERA}"
 echo "串口: ${SERIAL:-未检测到，请连接 CH340 后在界面刷新}"
 echo "CUDA: ${PUZZLE_VISION_CUDA:-auto}（可设为 0 强制 CPU）"
+echo "拼接进程: $PUZZLE_ASSEMBLY_WORKERS（白片和扑克牌法1）"
 
 if [[ -z "${DISPLAY:-}" ]]; then
     echo "错误：没有检测到 DISPLAY，Tkinter 比赛界面无法打开。" >&2

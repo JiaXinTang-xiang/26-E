@@ -64,6 +64,7 @@ RUN_LOG_DIR = OUTPUT_DIR / "competition_runs"
 ROI_PATH = LOCAL_CONFIG_DIR / "a4_roi.json"
 CARD2_SOURCE_FRAME_PATH = OUTPUT_DIR / "card2_source_frame.png"
 CARD_CANDIDATE_GALLERY_PATH = OUTPUT_DIR / "card_candidate_gallery.png"
+STABILITY_RELAX_SECONDS = 30.0
 
 
 class CompetitionApp(PuzzleControlApp):
@@ -782,6 +783,7 @@ class CompetitionApp(PuzzleControlApp):
             return
 
         self._prepare_new_competition_run()
+        self._set_planning_stability_frames(4, "新一轮比赛默认使用4帧稳定识别")
         self.ignore_controller_status_until_next_run = False
         self.competition_active = True
         self.competition_mode = mode
@@ -802,7 +804,7 @@ class CompetitionApp(PuzzleControlApp):
             self.status.set("只识别4块并放到下半区4个固定点，不调用拼接算法。")
         elif mode.planning_method == "self_assembly":
             self.plan_state.set("自备拼图：正在稳定识别4块碎片…")
-            self.status.set("优先匹配固定四块100×60模板；失败后尝试通用拼接，再自动保底搬运。")
+            self.status.set("优先匹配固定四块100×60模板；模板失败后直接自动保底搬运。")
         elif mode.planning_method == "texture":
             self.plan_state.set("扑克牌法1：正在稳定识别1～4块碎片…")
             self.status.set("先宽松枚举矩形候选，再用牌面图案剖面、长宽比和圆角软提示排序。")
@@ -828,6 +830,34 @@ class CompetitionApp(PuzzleControlApp):
         self._refresh_task_list()
         self.plan_state.set("方案：正在开始新一轮")
         self.task_state.set("任务：等待识别")
+
+    def _set_planning_stability_frames(self, required_frames: int, reason: str) -> None:
+        """Replace the tracker while preserving its motion tolerances."""
+        old = self.planning_tracker
+        self.planning_tracker = type(old)(
+            required_frames=required_frames,
+            center_tolerance_px=old.center_tolerance_px,
+            angle_tolerance_deg=old.angle_tolerance_deg,
+            area_tolerance_ratio=old.area_tolerance_ratio,
+            polygon_tolerance_px=old.polygon_tolerance_px,
+        )
+        self.planning_tracker.reset(reason)
+
+    def _relax_stability_after_wait(self, elapsed: float) -> bool:
+        """Fall back from four to two frames only while recognition is pending."""
+        if not (
+            self.competition_active
+            and self.planning_active
+            and elapsed >= STABILITY_RELAX_SECONDS
+            and self.planning_tracker.required_frames == 4
+            and not self.planning_tracker.status.stable
+        ):
+            return False
+        self._set_planning_stability_frames(2, "等待30秒后自动改用2帧稳定识别")
+        self.plan_state.set("方案：30秒内未稳定识别，已自动改为连续2帧")
+        self.status.set("仍未达到4帧稳定条件，现改用连续2帧；请继续保持碎片和相机静止。")
+        self._append_log("VISION STABILITY RELAXED: 4 frames -> 2 frames after 30 seconds")
+        return True
 
     def _retry_last_competition(self) -> None:
         if self.last_competition_mode is None:
@@ -873,6 +903,7 @@ class CompetitionApp(PuzzleControlApp):
                     roi,
                     config,
                     require_upper_half=True,
+                    allow_general_fallback=False,
                 )
                 document = build_movement_plan(
                     pieces,
@@ -1334,6 +1365,8 @@ class CompetitionApp(PuzzleControlApp):
             self.planning_active = False
             self.planning_generation += 1
             self._finish_competition("timeout", "超过题目规定的120秒")
+        elif self._relax_stability_after_wait(elapsed):
+            pass
         elif (
             self.competition_active
             and self.competition_waiting_for_serial

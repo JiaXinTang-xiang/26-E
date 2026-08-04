@@ -2,9 +2,9 @@
   "format": "puzzle-device.a4-roi.v1",
   "camera_rotation_degrees": 180,
   "roi": {
-    "x": 433,
-    "y": 73,
-    "width": 462,
+    "x": 441,
+    "y": 76,
+    "width": 465,
     "height": 634
   }
 }

@@ -626,19 +626,28 @@ def _assemble_batch(arguments: tuple) -> list[tuple[tuple, tuple | None]]:
 
 def _assembly_worker_count(piece_count: int) -> int:
     """Choose a conservative process count for exhaustive CPU geometry."""
+    # One- and two-piece searches are tiny; process startup would cost more
+    # than the complete serial solve even when the launcher requests workers.
+    if piece_count < 3:
+        return 1
     configured = os.environ.get("PUZZLE_ASSEMBLY_WORKERS", "").strip()
     if configured:
         try:
             return max(1, min(piece_count, int(configured)))
         except ValueError:
             return 1
-    # The bounded current-profile search normally finishes before a spawned
-    # process pool can amortize its startup cost.  Keep it serial by default;
-    # set PUZZLE_ASSEMBLY_PARALLEL=1 after timing real worst-case contours.
-    # This also leaves Jetson Nano CPU time for the camera and GUI.
-    if piece_count < 3 or not os.environ.get("PUZZLE_ASSEMBLY_PARALLEL"):
-        return 1
     is_arm = platform.machine().lower() in ("aarch64", "arm64", "armv7l")
+    parallel_setting = os.environ.get("PUZZLE_ASSEMBLY_PARALLEL", "").strip().lower()
+    if parallel_setting:
+        parallel_enabled = parallel_setting not in ("0", "false", "no", "off")
+    else:
+        # Jetson's four-piece exhaustive search is long enough to amortize
+        # spawn overhead.  Use two workers by default while leaving CPU time
+        # for the camera, GUI and serial loop.  Desktop builds remain serial
+        # unless explicitly enabled for predictable Windows behaviour.
+        parallel_enabled = is_arm
+    if not parallel_enabled:
+        return 1
     return max(1, min(piece_count, os.cpu_count() or 1, 2 if is_arm else 4))
 
 
@@ -1504,6 +1513,7 @@ def solve_self_assembly(
     roi: tuple[int, int, int, int],
     config: AssemblyConfig | None = None,
     require_upper_half: bool = True,
+    allow_general_fallback: bool = True,
 ) -> AssemblyPlan:
     """Solve the self-prepared four pieces by fixed template, then general fallback."""
     cfg = config or AssemblyConfig()
@@ -1624,7 +1634,9 @@ def solve_self_assembly(
             placement_reference_polygons=tuple(placement_references),
             enforce_corresponding_vertex_limit=False,
         )
-    except (OSError, KeyError, json.JSONDecodeError, RuntimeError, ValueError):
+    except (OSError, KeyError, json.JSONDecodeError, RuntimeError, ValueError) as exc:
+        if not allow_general_fallback:
+            raise RuntimeError(f"固定模板匹配失败：{exc}") from exc
         return solve_assembly(
             polygons,
             roi,

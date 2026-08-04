@@ -7,6 +7,7 @@ cd "$SCRIPT_DIR"
 # -- defaults (override via env or args) ----------------------------------
 CAMERA="${CAMERA:-0}"
 SERIAL="${SERIAL:-}"
+export PUZZLE_ASSEMBLY_WORKERS="${PUZZLE_ASSEMBLY_WORKERS:-2}"
 
 # auto-detect CH341 / CH340 serial port if not explicitly set
 if [[ -z "$SERIAL" ]]; then
@@ -29,6 +30,7 @@ done
 
 echo "相机:  /dev/video${CAMERA}"
 echo "串口:  ${SERIAL:-（未连接）}"
+echo "拼接进程: $PUZZLE_ASSEMBLY_WORKERS"
 echo "----------------------------------------"
 
 PYTHON_BIN="python3"

@@ -17,6 +17,7 @@ from puzzle_device.planning import (
 )
 from puzzle_device.planning.assembly import (
     _apply,
+    _assembly_worker_count,
     _choose_candidate,
     _edge_candidates,
     _matched_seams_are_valid,
@@ -42,6 +43,21 @@ def _place(polygons, config):
 
 
 class AssemblyTest(unittest.TestCase):
+    def test_jetson_defaults_to_two_geometry_workers(self):
+        with patch.dict("os.environ", {}, clear=True), \
+                patch("puzzle_device.planning.assembly.platform.machine", return_value="aarch64"), \
+                patch("puzzle_device.planning.assembly.os.cpu_count", return_value=6):
+            self.assertEqual(_assembly_worker_count(4), 2)
+            self.assertEqual(_assembly_worker_count(3), 2)
+            self.assertEqual(_assembly_worker_count(2), 1)
+
+    def test_worker_environment_override_wins_on_jetson(self):
+        with patch.dict("os.environ", {"PUZZLE_ASSEMBLY_WORKERS": "1"}, clear=True), \
+                patch("puzzle_device.planning.assembly.platform.machine", return_value="aarch64"):
+            self.assertEqual(_assembly_worker_count(4), 1)
+        with patch.dict("os.environ", {"PUZZLE_ASSEMBLY_WORKERS": "2"}, clear=True):
+            self.assertEqual(_assembly_worker_count(2), 1)
+
     def test_relaxed_card_profile_accepts_noisy_card_ratio_candidate(self):
         config = AssemblyConfig()
         polygon = a4_to_global_pixels(
