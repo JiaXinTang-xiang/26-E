@@ -14,6 +14,7 @@ import math
 import multiprocessing as mp
 import os
 import platform
+import time
 
 import cv2
 import numpy as np
@@ -28,6 +29,7 @@ from .assembly import (
     _inside_normal,
     _intersection_area,
     _match_segments,
+    _prepare_texture_seam_context,
     _texture_seam_diagnostics,
     _unexplained_edge_ratio,
     global_pixels_to_a4,
@@ -241,11 +243,16 @@ def _partial_state_score(
 
 
 def _search_composite_root(
-    arguments: tuple[list[np.ndarray], AssemblyConfig, int, int]
+    arguments: tuple[
+        list[np.ndarray],
+        AssemblyConfig,
+        dict[tuple[int, int], tuple[Match, ...]],
+        int,
+        int,
+    ]
 ) -> list[_State]:
     """Search one anchored root; top-level so Windows can pickle the worker."""
-    polygons, config, root, beam_width = arguments
-    candidates = _composite_edge_candidates(polygons, config)
+    polygons, config, candidates, root, beam_width = arguments
     count = len(polygons)
     candidates_by_piece: list[list[Match]] = [[] for _ in range(count)]
     for matches in candidates.values():
@@ -296,11 +303,44 @@ def _search_composite_root(
     return [state for state in beam if all(t is not None for t in state.transforms)]
 
 
+def _completed_state_identity(state: _State) -> tuple:
+    """Identify the same physical layout found from different anchored roots.
+
+    Relative transforms remove the arbitrary global rotation/translation of
+    the root search.  Match identities remain in the key because an identical
+    placement reached through a different seam topology can have a different
+    texture/unexplained-edge score and must still be evaluated.
+    """
+    transforms = tuple(transform for transform in state.transforms if transform is not None)
+    if not transforms:
+        return (), ()
+    inverse = np.linalg.inv(transforms[0])
+    relative = []
+    for transform in transforms:
+        value = inverse @ transform
+        angle = math.degrees(math.atan2(value[1, 0], value[0, 0]))
+        relative.append((
+            round(angle, 4),
+            round(float(value[0, 2]), 4),
+            round(float(value[1, 2]), 4),
+        ))
+    matches = tuple(sorted(_match_identity(match) for match in state.matches))
+    return tuple(relative), matches
+
+
+def _card2_timing_enabled() -> bool:
+    configured = os.environ.get("PUZZLE_CARD2_TIMING", "").strip().lower()
+    if configured:
+        return configured not in ("0", "false", "no", "off")
+    return platform.machine().lower() in ("aarch64", "arm64", "armv7l")
+
+
 def _beam_layouts(
     polygons: list[np.ndarray], config: AssemblyConfig
 ) -> list[tuple[tuple[np.ndarray, ...], tuple[Match, ...]]]:
     count = len(polygons)
     beam_width = 150 if count >= 4 else 180
+    candidates = _composite_edge_candidates(polygons, config)
     configured = os.environ.get("PUZZLE_CARD2_WORKERS", "").strip()
     if configured:
         worker_count = max(1, min(count, int(configured)))
@@ -308,7 +348,7 @@ def _beam_layouts(
         is_arm = platform.machine().lower() in ("aarch64", "arm64", "armv7l")
         worker_count = max(1, min(count, os.cpu_count() or 1, 2 if is_arm else 4))
     arguments = [
-        (polygons, config, root, beam_width) for root in range(count)
+        (polygons, config, candidates, root, beam_width) for root in range(count)
     ]
     if worker_count == 1:
         root_results = [_search_composite_root(argument) for argument in arguments]
@@ -322,6 +362,13 @@ def _beam_layouts(
             root_results = list(executor.map(_search_composite_root, arguments))
     states = [state for values in root_results for state in values]
     states.sort(key=lambda state: state.search_score)
+    unique_states: dict[tuple, _State] = {}
+    for state in states:
+        key = _completed_state_identity(state)
+        old = unique_states.get(key)
+        if old is None or state.search_score < old.search_score:
+            unique_states[key] = state
+    states = sorted(unique_states.values(), key=lambda state: state.search_score)
     return [
         (tuple(transform for transform in state.transforms if transform is not None), state.matches)
         for state in states[: beam_width * 2]
@@ -444,15 +491,27 @@ def solve_composite_card_assembly(
         from .assembly import solve_textured_assembly
         return solve_textured_assembly(image, polygons, roi, cfg, require_upper_half)
 
+    search_started = time.monotonic()
+    layouts = _beam_layouts(local, cfg)
+    search_elapsed = time.monotonic() - search_started
+    evaluation_started = time.monotonic()
+    texture_context = _prepare_texture_seam_context(image, local, roi, cfg)
+    texture_cache: dict[tuple, tuple[float, int]] = {}
     evaluated = []
-    for transforms, matches in _beam_layouts(local, cfg):
+    for transforms, matches in layouts:
         result = _layout_metrics(local, transforms, cfg)
         if result is None:
             continue
         geometry_score, metrics, placed = result
         size, fill, convexity, hull_rect, overlap, unexplained = metrics
         seam_diagnostics = _texture_seam_diagnostics(
-            image, local, matches, roi, cfg
+            image,
+            local,
+            matches,
+            roi,
+            cfg,
+            prepared_context=texture_context,
+            cache=texture_cache,
         )
         seam_scores = tuple(score for score, _evidence in seam_diagnostics)
         seam_evidence = tuple(evidence for _score, evidence in seam_diagnostics)
@@ -484,6 +543,16 @@ def solve_composite_card_assembly(
             total, geometry_score, transforms, matches, placed, metrics,
             texture, seam_scores, seam_evidence,
         ))
+    evaluation_elapsed = time.monotonic() - evaluation_started
+    if _card2_timing_enabled():
+        print(
+            "[CARD2 TIMING] "
+            f"pieces={len(local)} layouts={len(layouts)} valid={len(evaluated)} "
+            f"unique_seams={len(texture_cache)} "
+            f"search={search_elapsed:.2f}s evaluation={evaluation_elapsed:.2f}s "
+            f"total={search_elapsed + evaluation_elapsed:.2f}s",
+            flush=True,
+        )
     if not evaluated:
         raise RuntimeError("法2未生成可用复合边拼接候选，请检查轮廓顶点")
     evaluated.sort(key=lambda item: item[0])

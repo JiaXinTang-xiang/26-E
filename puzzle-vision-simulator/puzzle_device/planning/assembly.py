@@ -941,22 +941,32 @@ def _texture_seam_diagnostics(
     matches: tuple,
     roi: tuple[int, int, int, int],
     config: AssemblyConfig,
+    *,
+    prepared_context: tuple | None = None,
+    cache: dict[tuple, tuple[float, int]] | None = None,
 ) -> tuple[tuple[float, int], ...]:
     """Return seam discontinuity together with real artwork evidence count."""
     if image is None or image.ndim != 3:
         raise ValueError("扑克牌花纹匹配需要有效的彩色相机画面")
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float64)
-    scale = np.array(
-        [roi[2] / config.a4_width_mm, roi[3] / config.a4_height_mm],
-        dtype=np.float64,
-    )
-    origin = np.asarray(roi[:2], dtype=np.float64)
-    references = [
-        _piece_paper_lab(lab, polygon, roi, config)
-        for polygon in polygons_a4
-    ]
+    if prepared_context is None:
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float64)
+        scale = np.array(
+            [roi[2] / config.a4_width_mm, roi[3] / config.a4_height_mm],
+            dtype=np.float64,
+        )
+        origin = np.asarray(roi[:2], dtype=np.float64)
+        references = [
+            _piece_paper_lab(lab, polygon, roi, config)
+            for polygon in polygons_a4
+        ]
+    else:
+        lab, scale, origin, references = prepared_context
     seam_diagnostics: list[tuple[float, int]] = []
     for match in matches:
+        cache_key = tuple(match[1:])
+        if cache is not None and cache_key in cache:
+            seam_diagnostics.append(cache[cache_key])
+            continue
         _, first, _first_edge, second, _second_edge, *_ = match
         first_start, first_end, second_start, second_end = _match_segments(
             polygons_a4, match
@@ -1002,13 +1012,38 @@ def _texture_seam_diagnostics(
         informative = [item for item in profile_scores if item[1] > 0]
         if informative:
             evidence_total = int(sum(evidence for _, evidence in informative))
-            seam_diagnostics.append((float(
+            diagnostic = (float(
                 sum(score * evidence for score, evidence in informative)
                 / evidence_total
-            ), evidence_total))
+            ), evidence_total)
         else:
-            seam_diagnostics.append((float(config.card_texture_neutral_score), 0))
+            diagnostic = (float(config.card_texture_neutral_score), 0)
+        seam_diagnostics.append(diagnostic)
+        if cache is not None:
+            cache[cache_key] = diagnostic
     return tuple(seam_diagnostics)
+
+
+def _prepare_texture_seam_context(
+    image: np.ndarray,
+    polygons_a4: list[np.ndarray],
+    roi: tuple[int, int, int, int],
+    config: AssemblyConfig,
+) -> tuple:
+    """Prepare immutable image data shared by many card-layout candidates."""
+    if image is None or image.ndim != 3:
+        raise ValueError("扑克牌花纹匹配需要有效的彩色相机画面")
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float64)
+    scale = np.array(
+        [roi[2] / config.a4_width_mm, roi[3] / config.a4_height_mm],
+        dtype=np.float64,
+    )
+    origin = np.asarray(roi[:2], dtype=np.float64)
+    references = [
+        _piece_paper_lab(lab, polygon, roi, config)
+        for polygon in polygons_a4
+    ]
+    return lab, scale, origin, references
 
 
 def _choose_candidate(

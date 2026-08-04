@@ -850,8 +850,9 @@ class CompetitionApp(PuzzleControlApp):
             )
         ):
             card_config = relaxed_card_config(config)
-            if not self.competition_active:
-                write_image(CARD2_SOURCE_FRAME_PATH, frame)
+            # Keep the exact source frame for Jetson timing/replay comparison.
+            # This does not affect the selected plan or competition preview.
+            write_image(CARD2_SOURCE_FRAME_PATH, frame)
             assembly = solve_composite_card_assembly(
                 frame,
                 [piece.polygon for piece in pieces],
