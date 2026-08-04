@@ -1,0 +1,47 @@
+{
+  "format": "puzzle-device.pixel-to-gantry-calibration.v1",
+  "created_utc": "2026-08-03T13:28:40+08:00",
+  "coordinate_system": {
+    "source": "undistorted camera pixels; x right, y down",
+    "target": "gantry absolute pulses after XY homing"
+  },
+  "matrix_pixel_to_pulse": [
+    [0.0, 4.7228081085, -745.9204128094],
+    [3.3245141417, 0.0, -1416.5137161684],
+    [0.0, 0.0, 1.0]
+  ],
+  "points": [
+    {"pixel_x": 449.97198879551814, "pixel_y": 198.99159663865544, "pulse_x": 200, "pulse_y": 100, "phase": "destination"},
+    {"pixel_x": 453.55742296918766, "pixel_y": 423.0812324929972, "pulse_x": 1200, "pulse_y": 100, "phase": "destination"},
+    {"pixel_x": 464.313725490196, "pixel_y": 611.3165266106442, "pulse_x": 2200, "pulse_y": 100, "phase": "source"},
+    {"pixel_x": 622.0728291316526, "pixel_y": 193.61344537815125, "pulse_x": 200, "pulse_y": 675, "phase": "destination"},
+    {"pixel_x": 634.6218487394957, "pixel_y": 622.0728291316526, "pulse_x": 2200, "pulse_y": 675, "phase": "source"},
+    {"pixel_x": 632.829131652661, "pixel_y": 414.1176470588235, "pulse_x": 1200, "pulse_y": 675, "phase": "destination"},
+    {"pixel_x": 810.3081232492997, "pixel_y": 423.0812324929972, "pulse_x": 1200, "pulse_y": 1300, "phase": "destination"},
+    {"pixel_x": 819.2717086834733, "pixel_y": 200.7843137254902, "pulse_x": 200, "pulse_y": 1300, "phase": "source"},
+    {"pixel_x": 840.7843137254902, "pixel_y": 193.61344537815125, "pulse_x": 200, "pulse_y": 1320, "phase": "destination"},
+    {"pixel_x": 808.515406162465, "pixel_y": 616.6946778711484, "pulse_x": 2200, "pulse_y": 1300, "phase": "source"},
+    {"pixel_x": 822.8571428571428, "pixel_y": 417.703081232493, "pulse_x": 1200, "pulse_y": 1320, "phase": "source"},
+    {"pixel_x": 817.4789915966386, "pixel_y": 629.2436974789915, "pulse_x": 2200, "pulse_y": 1320, "phase": "destination"}
+  ],
+  "inliers": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+  "metrics": {
+    "point_count": 12,
+    "inlier_count": 12,
+    "mean_error_pulse": 37.33,
+    "median_error_pulse": 35.63,
+    "max_error_pulse": 66.62
+  },
+  "metadata": {
+    "camera_index": 1,
+    "camera_rotation_degrees": 180,
+    "serial_port": "COM30",
+    "notes": "latest 12 clicks; repeated pulse rows and columns averaged before fitting",
+    "fit_model": "axis_decoupled_group_mean_affine",
+    "source_draft": "configs/local/calibration_points_draft.json",
+    "source_points": "latest 12 points",
+    "group_mean_error_pulse": 14.48,
+    "group_median_error_pulse": 14.69,
+    "group_max_error_pulse": 35.28
+  }
+}
