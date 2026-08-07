@@ -5,6 +5,6 @@
 - `annotations/`: manually verified piece and assembly labels.
 - `calibration/`: exported calibration-point tables and validation measurements.
 
-Captured experiment folders remain machine-specific and may be ignored. The
-runtime background at `data/local/empty_work_area.png` is versioned because
-background-difference recognition needs it on the Jetson target.
+Captured experiment folders and runtime backgrounds remain machine-specific and
+are intentionally ignored. Create `data/local/empty_work_area.png` locally when
+background-difference recognition is enabled on a deployment target.

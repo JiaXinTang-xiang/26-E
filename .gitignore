@@ -1,0 +1,33 @@
+# Private / non-public source trees
+参考代码/
+TicTacToe_Demo - 202512/
+题目/
+
+# Generated results and machine-local files
+output/
+puzzle-vision-simulator/output/
+puzzle-vision-simulator/data/local/
+puzzle-vision-simulator/configs/local/
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Build products and IDE files
+build/
+dist/
+package/
+*.spec
+.idea/
+.vscode/
+.DS_Store
+
+# Logs, temporary files, and local archives
+*.log
+*.tmp
+*.bak
+*.swp
+MUJOCO_LOG.TXT
+*.zip
