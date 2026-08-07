@@ -89,9 +89,16 @@ class CompetitionApp(PuzzleControlApp):
         self.run_log_path: Path | None = None
         self.showing_candidate_gallery = False
         self.candidate_gallery_available = False
+        self.saved_roi_overlay: tuple[int, int, int, int] | None = None
         self._allow_plan_loading = False
         super().__init__(root, camera_index, serial_port, rotate_180)
         self._allow_plan_loading = True
+        try:
+            self.saved_roi_overlay = self._load_planning_roi()
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            # Missing/invalid ROI is reported when a competition calculation
+            # starts. The live camera preview itself remains available.
+            self.saved_roi_overlay = None
         self.tasks = []
         self.preview = None
         self.plan_state.set("方案：等待选择比赛题目")
@@ -325,6 +332,32 @@ class CompetitionApp(PuzzleControlApp):
         )
         self.retry_button.pack(fill="x", pady=(3 if self.compact_layout else 6, 0))
 
+        background_bar = ttk.LabelFrame(
+            page,
+            text="换环境后常用",
+            padding=4 if self.compact_layout else 7,
+        )
+        background_bar.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(4 if self.compact_layout else 8, 0),
+        )
+        background_bar.columnconfigure(0, weight=1)
+        self.capture_background_button = ttk.Button(
+            background_bar,
+            text="采集当前图片作为背景",
+            command=self._capture_empty_background,
+        )
+        self.capture_background_button.grid(row=0, column=0, sticky="ew")
+        ttk.Label(
+            background_bar,
+            text="采集前请移走所有碎片和吸头",
+            foreground="#8a3b00",
+            font=_ui_font(8 if self.compact_layout else 9),
+        ).grid(row=0, column=1, padx=(8 if self.compact_layout else 12, 0))
+
     def _update_competition_scroll_region(self, _event=None) -> None:
         self.competition_controls_canvas.configure(
             scrollregion=self.competition_controls_canvas.bbox("all")
@@ -523,17 +556,12 @@ class CompetitionApp(PuzzleControlApp):
         tools.pack(fill="x", pady=(8, 0))
         ttk.Button(
             tools,
-            text="采集当前空桌面背景",
-            command=self._capture_empty_background,
-        ).pack(fill="x")
-        ttk.Button(
-            tools,
             text="重新框选 A4 ROI",
             command=self._arm_roi_selection,
-        ).pack(fill="x", pady=(6, 0))
+        ).pack(fill="x")
         ttk.Label(
             tools,
-            text="请先移开所有碎片，再点击；背景会保存到 data/local/empty_work_area.png。",
+            text="ROI 变化后，请回比赛页底部重新采集背景。",
             foreground="#8a3b00",
             wraplength=380,
             justify="left",
@@ -687,6 +715,7 @@ class CompetitionApp(PuzzleControlApp):
                 "roi": {"x": x, "y": y, "width": width, "height": height},
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             self.planning_roi = (x, y, width, height)
+            self.saved_roi_overlay = self.planning_roi
         except (OSError, TypeError, ValueError) as exc:
             messagebox.showerror("ROI 保存失败", str(exc))
             return
@@ -1418,9 +1447,10 @@ class CompetitionApp(PuzzleControlApp):
         canvas.delete("all")
         canvas.create_image(origin[0], origin[1], image=photo, anchor="nw")
 
-        # 调试页叠加 ROI。保存的 ROI 用蓝色，当前拖拽中的 ROI 用黄色虚线。
+        # 比赛页和调试页都叠加已保存的 ROI。调试页重新框选时，
+        # 当前拖拽区域使用黄色虚线。叠加只影响画布预览。
+        roi = None
         if getattr(self, "debug_canvas", None) is canvas:
-            roi = None
             if self.roi_selecting and self.roi_drag_start and self.roi_drag_current:
                 x0, y0 = self.roi_drag_start
                 x1, y1 = self.roi_drag_current
@@ -1429,27 +1459,31 @@ class CompetitionApp(PuzzleControlApp):
                     abs(x1 - x0), abs(y1 - y0),
                     "#ffd400", (8, 5),
                 )
-            elif getattr(self, "planning_roi", None):
-                x, y, roi_width, roi_height = self.planning_roi
+        if roi is None and not getattr(self, "showing_candidate_gallery", False):
+            saved_roi = getattr(self, "saved_roi_overlay", None) or getattr(
+                self, "planning_roi", None
+            )
+            if saved_roi:
+                x, y, roi_width, roi_height = saved_roi
                 roi = (x, y, roi_width, roi_height, "#39a9ff", None)
-            if roi is not None:
-                x, y, roi_width, roi_height, color, dash = roi
-                coords = (
-                    origin[0] + x * scale,
-                    origin[1] + y * scale,
-                    origin[0] + (x + roi_width) * scale,
-                    origin[1] + (y + roi_height) * scale,
-                )
-                options = {"outline": color, "width": 2, "tags": "roi_overlay"}
-                if dash:
-                    options["dash"] = dash
-                canvas.create_rectangle(*coords, **options)
-                canvas.create_text(
-                    coords[0] + 6, coords[1] + 6,
-                    text="A4 ROI", anchor="nw", fill=color,
-                    font=_ui_font(10, bold=True),
-                    tags="roi_overlay",
-                )
+        if roi is not None:
+            x, y, roi_width, roi_height, color, dash = roi
+            coords = (
+                origin[0] + x * scale,
+                origin[1] + y * scale,
+                origin[0] + (x + roi_width) * scale,
+                origin[1] + (y + roi_height) * scale,
+            )
+            options = {"outline": color, "width": 2, "tags": "roi_overlay"}
+            if dash:
+                options["dash"] = dash
+            canvas.create_rectangle(*coords, **options)
+            canvas.create_text(
+                coords[0] + 6, coords[1] + 6,
+                text="A4 ROI", anchor="nw", fill=color,
+                font=_ui_font(10, bold=True),
+                tags="roi_overlay",
+            )
 
     def _append_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
