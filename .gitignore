@@ -1,7 +1,5 @@
 # Private / non-public source trees
 参考代码/
-TicTacToe_Demo - 202512/
-题目/
 
 # Generated results and machine-local files
 output/
@@ -31,3 +29,30 @@ package/
 *.swp
 MUJOCO_LOG.TXT
 *.zip
+
+# Keil MDK-ARM build products and local state (stm32/)
+*.uvguix*
+*.uvoptx
+*.scvd
+*.o
+*.crf
+*.d
+*.dep
+*.lnp
+*.axf
+*.hex
+*.bin
+*.elf
+*.map
+*.lst
+*.htm
+*.iex
+stm32/MDK-ARM/DebugConfig/
+stm32/MDK-ARM/RTE/
+
+# STM32CubeMX generated state (regenerable from *.ioc)
+.mxproject
+
+# Local tooling / temp files
+stm32/.claude/
+题目/tmp/
